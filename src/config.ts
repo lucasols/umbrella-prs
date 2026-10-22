@@ -1,4 +1,11 @@
 import { err, ok, type Result } from './result';
+import {
+  isBoolean,
+  isNumber,
+  isRecord,
+  isString,
+  isStringArray,
+} from './utils.typeGuards';
 
 export type UmbrellaConfig = {
   /**
@@ -46,7 +53,7 @@ export type ResolvedConfig = {
 export type ConfigError = { code: 'invalid-config'; message: string };
 
 const typeRegex = /^[a-z0-9][a-z0-9-]*$/;
-const reservedTypes = new Set(['stack', 'uchild', 'stacked', 'umbrella']);
+const reservedTypes = new Set(['stack', 'under', 'stacked', 'umbrella']);
 
 export function resolveConfig(
   config: UmbrellaConfig,
@@ -104,7 +111,9 @@ function configError(message: string) {
 }
 
 /** Validates an unknown value, e.g. a parsed JSON config file */
-export function parseConfig(value: unknown): Result<UmbrellaConfig, ConfigError> {
+export function parseConfig(
+  value: unknown,
+): Result<UmbrellaConfig, ConfigError> {
   if (!isRecord(value)) return configError('Config must be an object');
 
   const { types } = value;
@@ -207,26 +216,6 @@ export function parseConfig(value: unknown): Result<UmbrellaConfig, ConfigError>
   const resolved = resolveConfig(config);
 
   return resolved.ok ? ok(config) : resolved;
-}
-
-export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function isString(value: unknown): value is string {
-  return typeof value === 'string';
-}
-
-function isNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-
-function isBoolean(value: unknown): value is boolean {
-  return typeof value === 'boolean';
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(isString);
 }
 
 function getOptional<T>(

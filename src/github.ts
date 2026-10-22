@@ -1,5 +1,11 @@
-import { isRecord } from './config';
+import { isRecord } from './utils.typeGuards';
 import { CommandError, formatCommand, type Exec } from './exec';
+
+const trailingNewlineRegex = /\n$/;
+const prUrlNumberRegex = /\/pull\/(\d+)/;
+const shaRegex = /^[\da-f]{40,64}$/;
+
+const prFields = 'number,title,url,headRefName,baseRefName,author,isDraft';
 
 /** Only `number`, `title` and `headRefName` are required, so PR types of projects are assignable */
 export type PrInfo = {
@@ -14,10 +20,6 @@ export type PrInfo = {
 };
 
 export type FullPrInfo = Required<Omit<PrInfo, 'body'>> & { body?: string };
-
-const prFields = 'number,title,url,headRefName,baseRefName,author,isDraft';
-
-export type GitHub = ReturnType<typeof createGitHub>;
 
 export function createGitHub({
   exec,
@@ -93,9 +95,9 @@ export function createGitHub({
       const value: unknown = JSON.parse(line);
 
       if (
-        isRecord(value)
-        && typeof value.id === 'number'
-        && typeof value.body === 'string'
+        isRecord(value) &&
+        typeof value.id === 'number' &&
+        typeof value.body === 'string'
       ) {
         comments.push({ id: value.id, body: value.body });
       }
@@ -172,7 +174,7 @@ export function createGitHub({
         '.body',
       ]);
 
-      return out.replace(/\n$/, '');
+      return out.replace(trailingNewlineRegex, '');
     },
 
     async editPrBody(prNumber: number, body: string) {
@@ -223,7 +225,7 @@ export function createGitHub({
       );
 
       const url = out.trim().split('\n').at(-1) ?? '';
-      const number = Number(/\/pull\/(\d+)/.exec(url)?.[1]);
+      const number = Number(prUrlNumberRegex.exec(url)?.[1]);
 
       if (!Number.isInteger(number)) {
         throw new Error(`Could not read the PR number from: ${out}`);
@@ -246,7 +248,7 @@ export function createGitHub({
 
       const sha = out.trim();
 
-      if (!/^[\da-f]{40,64}$/.test(sha)) {
+      if (!shaRegex.test(sha)) {
         throw new Error(
           `Could not get the merge base of ${base} and ${head}: ${out}`,
         );
@@ -294,6 +296,8 @@ export function createGitHub({
   };
 }
 
+export type GitHub = ReturnType<typeof createGitHub>;
+
 function encodeRef(ref: string) {
   return ref.split('/').map(encodeURIComponent).join('/');
 }
@@ -321,10 +325,10 @@ function parsePr(value: unknown): FullPrInfo | null {
     value;
 
   if (
-    typeof number !== 'number'
-    || typeof title !== 'string'
-    || typeof headRefName !== 'string'
-    || typeof baseRefName !== 'string'
+    typeof number !== 'number' ||
+    typeof title !== 'string' ||
+    typeof headRefName !== 'string' ||
+    typeof baseRefName !== 'string'
   ) {
     return null;
   }

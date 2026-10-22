@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
-import { isRecord } from '../config';
+import { isRecord } from '../utils.typeGuards';
 import { defaultExec, type Exec } from '../exec';
 import { parseBranchStrict } from '../naming';
 import { renderSyncDiffComment } from '../syncDiff';
@@ -28,53 +28,6 @@ export const EXIT = {
   config: 4,
   precondition: 5,
 } as const;
-
-export type CliIo = {
-  argv: string[];
-  cwd: string;
-  env: Record<string, string | undefined>;
-  stdout: (text: string) => void;
-  stderr: (text: string) => void;
-  isTTY: boolean;
-  exec?: Exec;
-  prompter?: Prompter;
-};
-
-type OptionDef = {
-  type: 'string' | 'boolean';
-  multiple?: boolean;
-  description: string;
-};
-
-type CommandContext = {
-  positionals: string[];
-  values: Record<string, string | boolean | (string | boolean)[] | undefined>;
-  umbrella: () => UmbrellaPrs;
-  interactive: boolean;
-  yes: boolean;
-  prompter: Prompter;
-  env: Record<string, string | undefined>;
-  cwd: string;
-  log: (text: string) => void;
-};
-
-type CommandOutput = {
-  exitCode?: number;
-  /** Printed with `--json`, merged with `ok: true` */
-  data: Record<string, unknown>;
-  /** Printed without `--json` */
-  text: string[];
-};
-
-type CommandDef = {
-  path: string[];
-  args?: string;
-  description: string;
-  options?: Record<string, OptionDef>;
-  examples?: string[];
-  needsConfig?: boolean;
-  run: (ctx: CommandContext) => Promise<CommandOutput>;
-};
 
 class CliError extends Error {
   readonly code: string;
@@ -136,6 +89,12 @@ function unwrap<T>(
   });
 }
 
+type OptionDef = {
+  type: 'string' | 'boolean';
+  multiple?: boolean;
+  description: string;
+};
+
 const globalOptions: Record<string, OptionDef> = {
   json: { type: 'boolean', description: 'Print JSON to stdout' },
   yes: {
@@ -146,6 +105,18 @@ const globalOptions: Record<string, OptionDef> = {
   config: { type: 'string', description: 'Path of the config file' },
   cwd: { type: 'string', description: 'Run in this directory' },
   help: { type: 'boolean', description: 'Show help' },
+};
+
+type CommandContext = {
+  positionals: string[];
+  values: Record<string, string | boolean | (string | boolean)[] | undefined>;
+  umbrella: () => UmbrellaPrs;
+  interactive: boolean;
+  yes: boolean;
+  prompter: Prompter;
+  env: Record<string, string | undefined>;
+  cwd: string;
+  log: (text: string) => void;
 };
 
 function getString(ctx: CommandContext, name: string): string | undefined {
@@ -193,10 +164,7 @@ function getChoice<T extends string>(
 async function requireValue(
   ctx: CommandContext,
   value: string | undefined,
-  {
-    flag,
-    prompt,
-  }: { flag: string; prompt: () => Promise<string> },
+  { flag, prompt }: { flag: string; prompt: () => Promise<string> },
 ): Promise<string> {
   if (value !== undefined) return value;
 
@@ -277,7 +245,9 @@ async function resolveUmbrellaOption(
   return selectUmbrella(ctx, { allowNew: false });
 }
 
-function formatPr(pr: { number: number; url: string; alreadyExisted: boolean } | null) {
+function formatPr(
+  pr: { number: number; url: string; alreadyExisted: boolean } | null,
+) {
   if (!pr) return [];
 
   return [`${pr.alreadyExisted ? 'PR already open' : 'Opened PR'}: ${pr.url}`];
@@ -309,6 +279,14 @@ async function promptType(ctx: CommandContext): Promise<string | undefined> {
     })),
   );
 }
+
+type CommandOutput = {
+  exitCode?: number;
+  /** Printed with `--json`, merged with `ok: true` */
+  data: Record<string, unknown>;
+  /** Printed without `--json` */
+  text: string[];
+};
 
 async function createUmbrellaCmd(ctx: CommandContext): Promise<CommandOutput> {
   const format = getChoice(ctx, 'format', ['umbrella', 'legacy'] as const);
@@ -407,9 +385,17 @@ async function createCmd(ctx: CommandContext): Promise<CommandOutput> {
   }
 
   const kind = await ctx.prompter.select('What do you want to create?', [
-    { value: 'child', label: 'Child branch', hint: 'uchild/<umbrella>/<name>' },
-    { value: 'sync', label: 'Sync with base', hint: 'uchild/<umbrella>/sync-N' },
-    { value: 'umbrella', label: 'Umbrella branch', hint: '<type>/umbrella/<name>' },
+    { value: 'child', label: 'Child branch', hint: 'under/<umbrella>/<name>' },
+    {
+      value: 'sync',
+      label: 'Sync with base',
+      hint: 'under/<umbrella>/sync-N',
+    },
+    {
+      value: 'umbrella',
+      label: 'Umbrella branch',
+      hint: '<type>/umbrella/<name>',
+    },
   ]);
 
   if (kind === 'umbrella') return createUmbrellaCmd(ctx);
@@ -432,9 +418,7 @@ async function convertCmd(ctx: CommandContext): Promise<CommandOutput> {
   let newUmbrella = getString(ctx, 'new-umbrella');
 
   if (umbrella !== undefined && newUmbrella !== undefined) {
-    throw usageError(
-      'Pass either --umbrella or --new-umbrella, not both',
-    );
+    throw usageError('Pass either --umbrella or --new-umbrella, not both');
   }
 
   if (umbrella === undefined && newUmbrella === undefined) {
@@ -486,11 +470,18 @@ async function convertCmd(ctx: CommandContext): Promise<CommandOutput> {
     data: { ...result, hasConflicts },
     text: [
       ...(result.umbrellaPr ?
-        [`Created umbrella ${result.umbrella.fullName}`, ...formatPr(result.umbrellaPr)]
+        [
+          `Created umbrella ${result.umbrella.fullName}`,
+          ...formatPr(result.umbrellaPr),
+        ]
       : []),
       `Created child ${result.branch.fullName}`,
       ...(hasConflicts ?
-        conflictText(result.branch.fullName, current ?? 'the branch', result.conflictedFiles)
+        conflictText(
+          result.branch.fullName,
+          current ?? 'the branch',
+          result.conflictedFiles,
+        )
       : []),
     ],
   };
@@ -566,7 +557,11 @@ async function treeCmd(ctx: CommandContext): Promise<CommandOutput> {
 }
 
 async function syncCmd(ctx: CommandContext): Promise<CommandOutput> {
-  const strategy = getChoice(ctx, 'strategy', ['auto', 'merge', 'rebase'] as const);
+  const strategy = getChoice(ctx, 'strategy', [
+    'auto',
+    'merge',
+    'rebase',
+  ] as const);
   const u = ctx.umbrella();
   let stash = getBoolean(ctx, 'stash');
 
@@ -596,7 +591,9 @@ async function syncCmd(ctx: CommandContext): Promise<CommandOutput> {
               'Resolve them and run `git rebase --continue`.',
             ]),
           ...(result.stashed ?
-            ['Your changes are still stashed, run `git stash pop` after finishing.']
+            [
+              'Your changes are still stashed, run `git stash pop` after finishing.',
+            ]
           : []),
         ]
       : [`Synced ${result.branch} with ${result.parent} (${result.strategy})`],
@@ -663,7 +660,9 @@ async function diffChildCmd(ctx: CommandContext): Promise<CommandOutput> {
 
     return {
       data: { parent: result.parent, files: result.files, file: filePath },
-      text: [`Diff vs ${result.parent} written to ${filePath} (${result.files.length} files)`],
+      text: [
+        `Diff vs ${result.parent} written to ${filePath} (${result.files.length} files)`,
+      ],
     };
   }
 
@@ -677,7 +676,12 @@ async function prTemplateCmd(ctx: CommandContext): Promise<CommandOutput> {
 
   return {
     data: { ...template },
-    text: [`base: ${template.base}`, `title: ${template.title}`, '', template.body],
+    text: [
+      `base: ${template.base}`,
+      `title: ${template.title}`,
+      '',
+      template.body,
+    ],
   };
 }
 
@@ -727,13 +731,17 @@ function getCiInput(ctx: CommandContext) {
 
   function required(name: string, value: string | undefined, envNames: string) {
     if (!value) {
-      throw usageError(`Missing --${name}`, `Pass --${name} or set ${envNames}`);
+      throw usageError(
+        `Missing --${name}`,
+        `Pass --${name} or set ${envNames}`,
+      );
     }
 
     return value;
   }
 
-  const prValue = getString(ctx, 'pr') ?? ctx.env.PR ?? event.number?.toString();
+  const prValue =
+    getString(ctx, 'pr') ?? ctx.env.PR ?? event.number?.toString();
 
   function parsePr(value: string) {
     const number = Number(value);
@@ -794,7 +802,9 @@ async function ciVerify(ctx: CommandContext) {
         [
           '## Umbrella PR checks failed',
           '',
-          ...result.errors.map((error) => `- ${error.message}\n  - Fix: ${error.fix}`),
+          ...result.errors.map(
+            (error) => `- ${error.message}\n  - Fix: ${error.fix}`,
+          ),
         ].join('\n'),
       );
     } else {
@@ -806,11 +816,15 @@ async function ciVerify(ctx: CommandContext) {
 }
 
 function formatVerifyText(result: VerifyResult): string[] {
-  if (result.kind === null) return ['Not an umbrella workflow PR, nothing to check'];
+  if (result.kind === null)
+    return ['Not an umbrella workflow PR, nothing to check'];
 
   return [
     ...(result.errors.length === 0 ? [`Umbrella ${result.kind} PR: ok`] : []),
-    ...result.errors.flatMap((error) => [`error: ${error.message}`, `fix: ${error.fix}`]),
+    ...result.errors.flatMap((error) => [
+      `error: ${error.message}`,
+      `fix: ${error.fix}`,
+    ]),
     ...result.warnings.flatMap((warning) => [
       `warning: ${warning.message}`,
       ...(warning.fix ? [`fix: ${warning.fix}`] : []),
@@ -892,7 +906,11 @@ async function ciSyncDiffCmd(ctx: CommandContext): Promise<CommandOutput> {
   const { result, body } = await ciSyncDiff(ctx, input.base());
 
   if (getBoolean(ctx, 'post')) {
-    unwrap(await ctx.umbrella().postSyncDiffComment({ prNumber: input.pr(), result }));
+    unwrap(
+      await ctx
+        .umbrella()
+        .postSyncDiffComment({ prNumber: input.pr(), result }),
+    );
   }
 
   return { data: { ...result, comment: body }, text: [body] };
@@ -916,7 +934,11 @@ async function ciAutoApproveCmd(ctx: CommandContext): Promise<CommandOutput> {
   return {
     data: { ...result },
     text: [
-      `${result.approved ? 'Approved' : result.eligible ? 'Eligible' : 'Not eligible'}: ${result.reason}`,
+      `${
+        result.approved ? 'Approved'
+        : result.eligible ? 'Eligible'
+        : 'Not eligible'
+      }: ${result.reason}`,
     ],
   };
 }
@@ -954,7 +976,11 @@ async function ciRunCmd(ctx: CommandContext): Promise<CommandOutput> {
   if (verify.kind === 'sync') {
     const { result } = await ciSyncDiff(ctx, input.base());
 
-    unwrap(await ctx.umbrella().postSyncDiffComment({ prNumber: input.pr(), result }));
+    unwrap(
+      await ctx
+        .umbrella()
+        .postSyncDiffComment({ prNumber: input.pr(), result }),
+    );
 
     syncDiff = result;
     text.push('Posted the sync diff comment');
@@ -964,8 +990,14 @@ async function ciRunCmd(ctx: CommandContext): Promise<CommandOutput> {
 }
 
 const ciInputOptions: Record<string, OptionDef> = {
-  head: { type: 'string', description: 'PR head branch (env HEAD_REF, GITHUB_HEAD_REF)' },
-  base: { type: 'string', description: 'PR base branch (env BASE_REF, GITHUB_BASE_REF)' },
+  head: {
+    type: 'string',
+    description: 'PR head branch (env HEAD_REF, GITHUB_HEAD_REF)',
+  },
+  base: {
+    type: 'string',
+    description: 'PR base branch (env BASE_REF, GITHUB_BASE_REF)',
+  },
   pr: { type: 'string', description: 'PR number (env PR, GITHUB_EVENT_PATH)' },
 };
 
@@ -981,12 +1013,21 @@ const syncDiffOptions: Record<string, OptionDef> = {
   },
 };
 
+type CommandDef = {
+  path: string[];
+  args?: string;
+  description: string;
+  options?: Record<string, OptionDef>;
+  examples?: string[];
+  run: (ctx: CommandContext) => Promise<CommandOutput>;
+};
+
 export const commands: CommandDef[] = [
   {
     path: ['parse'],
     args: '[branch]',
     description: 'Parse a branch name (defaults to the current branch)',
-    examples: ['umbrella-prs parse uchild/billing/adjust-ui --json'],
+    examples: ['umbrella-prs parse under/billing/adjust-ui --json'],
     run: parseCmd,
   },
   {
@@ -1000,7 +1041,10 @@ export const commands: CommandDef[] = [
     description:
       'Create <type>/umbrella/<name> from its base with an empty commit, push it and open its PR',
     options: {
-      type: { type: 'string', description: 'Branch type from the config, defaults to `defaultType`' },
+      type: {
+        type: 'string',
+        description: 'Branch type from the config, defaults to `defaultType`',
+      },
       format: { type: 'string', description: 'umbrella (default) or legacy' },
       on: {
         type: 'string',
@@ -1019,9 +1063,13 @@ export const commands: CommandDef[] = [
   {
     path: ['create', 'child'],
     args: '<name>',
-    description: 'Create uchild/<umbrella>/<name>',
+    description: 'Create under/<umbrella>/<name>',
     options: {
-      umbrella: { type: 'string', description: 'Umbrella name, defaults to the umbrella of the current branch' },
+      umbrella: {
+        type: 'string',
+        description:
+          'Umbrella name, defaults to the umbrella of the current branch',
+      },
       from: { type: 'string', description: 'umbrella (default) or current' },
     },
     examples: ['umbrella-prs create child adjust-ui --umbrella new-billing'],
@@ -1030,15 +1078,26 @@ export const commands: CommandDef[] = [
   {
     path: ['create', 'sync'],
     description:
-      "Create uchild/<umbrella>/sync[-N] and merge the umbrella's current base into it (the branch it depends on, or its configured base). Exits 3 when the merge has conflicts, leaving it in progress",
+      "Create under/<umbrella>/sync[-N] and merge the umbrella's current base into it (the branch it depends on, or its configured base). Exits 3 when the merge has conflicts, leaving it in progress",
     options: {
       from: {
         type: 'string',
-        description: 'Merge this branch instead, other branches than the bases create sync-<label>',
+        description:
+          'Merge this branch instead, other branches than the bases create sync-<label>',
       },
-      umbrella: { type: 'string', description: 'Umbrella name, defaults to the umbrella of the current branch' },
-      push: { type: 'boolean', description: 'Push when there are no conflicts' },
-      pr: { type: 'boolean', description: 'Push and open the sync PR when there are no conflicts' },
+      umbrella: {
+        type: 'string',
+        description:
+          'Umbrella name, defaults to the umbrella of the current branch',
+      },
+      push: {
+        type: 'boolean',
+        description: 'Push when there are no conflicts',
+      },
+      pr: {
+        type: 'boolean',
+        description: 'Push and open the sync PR when there are no conflicts',
+      },
     },
     examples: [
       'umbrella-prs create sync --umbrella new-billing --pr || (resolve, git commit --no-edit, umbrella-prs pr create)',
@@ -1052,9 +1111,15 @@ export const commands: CommandDef[] = [
       'Create a child of an umbrella and merge the current branch into it',
     options: {
       umbrella: { type: 'string', description: 'Existing umbrella name' },
-      'new-umbrella': { type: 'string', description: 'Create a new umbrella with this name' },
+      'new-umbrella': {
+        type: 'string',
+        description: 'Create a new umbrella with this name',
+      },
       type: { type: 'string', description: 'Type of the new umbrella' },
-      'no-pr': { type: 'boolean', description: 'Do not open the new umbrella PR' },
+      'no-pr': {
+        type: 'boolean',
+        description: 'Do not open the new umbrella PR',
+      },
     },
     examples: ['umbrella-prs convert adjust-ui --umbrella new-billing'],
     run: convertCmd,
@@ -1064,14 +1129,21 @@ export const commands: CommandDef[] = [
     args: '[name-or-branch]',
     description:
       'Find the umbrella branch of a name, umbrella branch or child branch (defaults to the current branch)',
-    options: { fetch: { type: 'boolean', description: 'Fetch before searching' } },
+    options: {
+      fetch: { type: 'boolean', description: 'Fetch before searching' },
+    },
     examples: ['umbrella-prs find-umbrella new-billing --json'],
     run: findUmbrellaCmd,
   },
   {
     path: ['tree'],
     description: 'Show umbrellas and their children',
-    options: { source: { type: 'string', description: 'prs (default, open PRs) or branches' } },
+    options: {
+      source: {
+        type: 'string',
+        description: 'prs (default, open PRs) or branches',
+      },
+    },
     run: treeCmd,
   },
   {
@@ -1080,8 +1152,15 @@ export const commands: CommandDef[] = [
     description:
       'Sync a child with its umbrella, or an umbrella with its base. Exits 3 on conflicts',
     options: {
-      strategy: { type: 'string', description: 'auto (default: merge when published, else rebase), merge or rebase' },
-      stash: { type: 'boolean', description: 'Stash uncommitted changes and pop them after' },
+      strategy: {
+        type: 'string',
+        description:
+          'auto (default: merge when published, else rebase), merge or rebase',
+      },
+      stash: {
+        type: 'boolean',
+        description: 'Stash uncommitted changes and pop them after',
+      },
     },
     run: syncCmd,
   },
@@ -1091,7 +1170,10 @@ export const commands: CommandDef[] = [
     description:
       'Conflict resolutions and manual edits of a sync branch, compared with the automatic merge',
     options: {
-      left: { type: 'string', description: 'Left branch, defaults to the umbrella' },
+      left: {
+        type: 'string',
+        description: 'Left branch, defaults to the umbrella',
+      },
       ...syncDiffOptions,
       out: { type: 'string', description: 'Write the diff to this file' },
     },
@@ -1100,11 +1182,23 @@ export const commands: CommandDef[] = [
   {
     path: ['diff', 'child'],
     args: '[branch]',
-    description: 'Diff of a child against its umbrella (or an umbrella against its base)',
+    description:
+      'Diff of a child against its umbrella (or an umbrella against its base)',
     options: {
-      include: { type: 'string', multiple: true, description: 'Glob to include, repeatable' },
-      exclude: { type: 'string', multiple: true, description: 'Glob to exclude, repeatable' },
-      'ignore-imports': { type: 'boolean', description: 'Drop files whose changes are only imports/exports' },
+      include: {
+        type: 'string',
+        multiple: true,
+        description: 'Glob to include, repeatable',
+      },
+      exclude: {
+        type: 'string',
+        multiple: true,
+        description: 'Glob to exclude, repeatable',
+      },
+      'ignore-imports': {
+        type: 'boolean',
+        description: 'Drop files whose changes are only imports/exports',
+      },
       out: { type: 'string', description: 'Write the diff to this file' },
     },
     run: diffChildCmd,
@@ -1128,10 +1222,18 @@ export const commands: CommandDef[] = [
       'Check the umbrella workflow rules of a PR. Exits 1 with the errors, warnings never fail',
     options: {
       ...ciInputOptions,
-      comment: { type: 'boolean', description: 'Post the errors as a PR comment' },
-      'skip-history': { type: 'boolean', description: 'Skip the git history checks' },
+      comment: {
+        type: 'boolean',
+        description: 'Post the errors as a PR comment',
+      },
+      'skip-history': {
+        type: 'boolean',
+        description: 'Skip the git history checks',
+      },
     },
-    examples: ['umbrella-prs ci verify --head "$HEAD_REF" --base "$BASE_REF" --pr "$PR" --json'],
+    examples: [
+      'umbrella-prs ci verify --head "$HEAD_REF" --base "$BASE_REF" --pr "$PR" --json',
+    ],
     run: ciVerifyCmd,
   },
   {
@@ -1148,18 +1250,30 @@ export const commands: CommandDef[] = [
     options: {
       ...ciInputOptions,
       ...syncDiffOptions,
-      'head-commit': { type: 'string', description: 'PR head commit, defaults to HEAD^2, then HEAD' },
-      post: { type: 'boolean', description: 'Post it as a PR comment, replacing the previous one' },
+      'head-commit': {
+        type: 'string',
+        description: 'PR head commit, defaults to HEAD^2, then HEAD',
+      },
+      post: {
+        type: 'boolean',
+        description: 'Post it as a PR comment, replacing the previous one',
+      },
     },
-    examples: ['umbrella-prs ci sync-diff --base beta --right master --pr 123 --post'],
+    examples: [
+      'umbrella-prs ci sync-diff --base beta --right master --pr 123 --post',
+    ],
     run: ciSyncDiffCmd,
   },
   {
     path: ['ci', 'auto-approve'],
-    description: 'Check if a child PR can be auto-approved, and approve it with --approve',
+    description:
+      'Check if a child PR can be auto-approved, and approve it with --approve',
     options: {
       ...ciInputOptions,
-      author: { type: 'string', description: 'PR author (env PR_AUTHOR, GITHUB_EVENT_PATH)' },
+      author: {
+        type: 'string',
+        description: 'PR author (env PR_AUTHOR, GITHUB_EVENT_PATH)',
+      },
       draft: { type: 'boolean', description: 'The PR is a draft' },
       approve: { type: 'boolean', description: 'Approve when eligible' },
     },
@@ -1172,16 +1286,28 @@ export const commands: CommandDef[] = [
     options: {
       ...ciInputOptions,
       ...syncDiffOptions,
-      'head-commit': { type: 'string', description: 'PR head commit, defaults to HEAD^2, then HEAD' },
-      comment: { type: 'boolean', description: 'Post verification errors as a PR comment' },
-      'skip-history': { type: 'boolean', description: 'Skip the git history checks' },
+      'head-commit': {
+        type: 'string',
+        description: 'PR head commit, defaults to HEAD^2, then HEAD',
+      },
+      comment: {
+        type: 'boolean',
+        description: 'Post verification errors as a PR comment',
+      },
+      'skip-history': {
+        type: 'boolean',
+        description: 'Skip the git history checks',
+      },
     },
     examples: ['umbrella-prs ci run --json'],
     run: ciRunCmd,
   },
 ];
 
-function findCommand(argv: string[]): { command: CommandDef | null; rest: string[] } {
+function findCommand(argv: string[]): {
+  command: CommandDef | null;
+  rest: string[];
+} {
   let best: CommandDef | null = null;
 
   for (const command of commands) {
@@ -1237,6 +1363,17 @@ function formatOptions(options: Record<string, OptionDef>) {
   );
 }
 
+export type CliIo = {
+  argv: string[];
+  cwd: string;
+  env: Record<string, string | undefined>;
+  stdout: (text: string) => void;
+  stderr: (text: string) => void;
+  isTTY: boolean;
+  exec?: Exec;
+  prompter?: Prompter;
+};
+
 export async function runCli(io: CliIo): Promise<number> {
   const json = io.argv.includes('--json');
 
@@ -1274,7 +1411,10 @@ export async function runCli(io: CliIo): Promise<number> {
 
   const options: NonNullable<ParseArgsConfig['options']> = {};
 
-  for (const [name, option] of Object.entries({ ...command.options, ...globalOptions })) {
+  for (const [name, option] of Object.entries({
+    ...command.options,
+    ...globalOptions,
+  })) {
     options[name] =
       option.multiple ?
         { type: 'string', multiple: true }
@@ -1284,7 +1424,12 @@ export async function runCli(io: CliIo): Promise<number> {
   let parsed: ReturnType<typeof parseArgs>;
 
   try {
-    parsed = parseArgs({ args: rest, options, allowPositionals: true, strict: true });
+    parsed = parseArgs({
+      args: rest,
+      options,
+      allowPositionals: true,
+      strict: true,
+    });
   } catch (error) {
     return printError(
       usageError(
@@ -1297,8 +1442,10 @@ export async function runCli(io: CliIo): Promise<number> {
   const values = parsed.values;
   const yes = values.yes === true || values['non-interactive'] === true;
   const interactive = !yes && !json && io.isTTY;
-  const cwd = typeof values.cwd === 'string' ? path.resolve(io.cwd, values.cwd) : io.cwd;
-  const configPath = typeof values.config === 'string' ? values.config : undefined;
+  const cwd =
+    typeof values.cwd === 'string' ? path.resolve(io.cwd, values.cwd) : io.cwd;
+  const configPath =
+    typeof values.config === 'string' ? values.config : undefined;
   const log = (text: string) => io.stderr(`${text}\n`);
 
   let umbrellaInstance: UmbrellaPrs | null = null;
@@ -1342,7 +1489,9 @@ export async function runCli(io: CliIo): Promise<number> {
     const exitCode = output.exitCode ?? EXIT.ok;
 
     if (json) {
-      io.stdout(`${JSON.stringify({ ok: exitCode === EXIT.ok, exitCode, ...output.data }, null, 2)}\n`);
+      io.stdout(
+        `${JSON.stringify({ ok: exitCode === EXIT.ok, exitCode, ...output.data }, null, 2)}\n`,
+      );
     } else {
       io.stdout(`${output.text.join('\n')}\n`);
     }
@@ -1353,7 +1502,11 @@ export async function runCli(io: CliIo): Promise<number> {
 
     if (error instanceof PromptCancelledError) {
       return printError(
-        new CliError({ code: 'cancelled', message: 'Cancelled', exitCode: EXIT.failed }),
+        new CliError({
+          code: 'cancelled',
+          message: 'Cancelled',
+          exitCode: EXIT.failed,
+        }),
       );
     }
 

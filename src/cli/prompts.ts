@@ -1,5 +1,14 @@
 import { createInterface } from 'node:readline/promises';
 
+const yesRegex = /^y(es)?$/i;
+
+export class PromptCancelledError extends Error {
+  constructor() {
+    super('Prompt cancelled');
+    this.name = 'PromptCancelledError';
+  }
+}
+
 export type Prompter = {
   text: (
     message: string,
@@ -11,13 +20,6 @@ export type Prompter = {
   ) => Promise<T>;
   confirm: (message: string) => Promise<boolean>;
 };
-
-export class PromptCancelledError extends Error {
-  constructor() {
-    super('Prompt cancelled');
-    this.name = 'PromptCancelledError';
-  }
-}
 
 /** Minimal readline prompts, keeps the CLI free of runtime dependencies */
 export function createReadlinePrompter({
@@ -81,7 +83,7 @@ export function createReadlinePrompter({
     async confirm(message) {
       const answer = await ask(`? ${message} (y/N): `);
 
-      return /^y(es)?$/i.test(answer.trim());
+      return yesRegex.test(answer.trim());
     },
   };
 }

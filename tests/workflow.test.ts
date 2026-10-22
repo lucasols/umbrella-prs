@@ -6,6 +6,8 @@ import {
   type TestRepo,
 } from './helpers';
 
+const shaRegex = /[\da-f]{40}/;
+
 let repo: TestRepo;
 
 beforeEach(() => {
@@ -40,7 +42,9 @@ describe('createUmbrella', () => {
     const { created } = await setupUmbrella('New Billing');
 
     expect(created.branch.fullName).toBe('feature/umbrella/new-billing');
-    expect(repo.git('branch', '--show-current')).toBe('feature/umbrella/new-billing');
+    expect(repo.git('branch', '--show-current')).toBe(
+      'feature/umbrella/new-billing',
+    );
     expect(repo.git('log', '-1', '--format=%s')).toBe(
       'Create umbrella PR for new-billing',
     );
@@ -77,7 +81,9 @@ describe('createUmbrella', () => {
     repo.commit('a change', { 'a.ts': 'a\n' });
     repo.git('push', '--quiet');
 
-    const b = unwrap(await u.createUmbrella({ name: 'b', on: 'feature/umbrella/a' }));
+    const b = unwrap(
+      await u.createUmbrella({ name: 'b', on: 'feature/umbrella/a' }),
+    );
 
     expect(b.dependsOn).toEqual({ branch: 'feature/umbrella/a', pr: 101 });
     expect(repo.prs[1]).toMatchObject({
@@ -86,7 +92,9 @@ describe('createUmbrella', () => {
     });
     expect(repo.git('show', 'HEAD~1:a.ts')).toBe('a');
 
-    expect(await u.createUmbrella({ name: 'c', on: 'feature/no-pr' })).toMatchObject({
+    expect(
+      await u.createUmbrella({ name: 'c', on: 'feature/no-pr' }),
+    ).toMatchObject({
       ok: false,
       error: { code: 'invalid-dependency' },
     });
@@ -101,9 +109,11 @@ describe('children', () => {
     repo.git('checkout', '--quiet', 'beta');
 
     const u = createTestUmbrella(repo);
-    const child = unwrap(await u.createChild({ name: 'adjust-ui', umbrella: 'legacy' }));
+    const child = unwrap(
+      await u.createChild({ name: 'adjust-ui', umbrella: 'legacy' }),
+    );
 
-    expect(child.branch.fullName).toBe('uchild/legacy/adjust-ui');
+    expect(child.branch.fullName).toBe('under/legacy/adjust-ui');
     expect(repo.git('rev-parse', 'HEAD')).toBe(
       repo.git('rev-parse', 'feature/stacked/legacy'),
     );
@@ -115,7 +125,9 @@ describe('children', () => {
 
     repo.git('checkout', '--quiet', 'beta');
 
-    expect(await u.createChild({ name: 'x', umbrella: 'legacy', from: 'current' })).toMatchObject({
+    expect(
+      await u.createChild({ name: 'x', umbrella: 'legacy', from: 'current' }),
+    ).toMatchObject({
       ok: false,
       error: { code: 'from-current-not-in-umbrella' },
     });
@@ -138,7 +150,7 @@ describe('children', () => {
       }),
     );
 
-    expect(result.branch.fullName).toBe('uchild/billing/my-work');
+    expect(result.branch.fullName).toBe('under/billing/my-work');
     expect(result.umbrellaPr).toMatchObject({ number: 101 });
     expect(repo.git('show', 'HEAD:work.ts')).toBe('work');
     expect(repo.git('rev-parse', 'HEAD^1')).toBe(
@@ -159,14 +171,14 @@ describe('syncs', () => {
     const sync = unwrap(await u.createSync({ umbrella: 'billing', pr: true }));
 
     expect(sync).toMatchObject({
-      branch: 'uchild/billing/sync-2',
+      branch: 'under/billing/sync-2',
       source: 'beta',
       conflictedFiles: [],
       pushed: true,
       pr: { number: 102 },
     });
     expect(repo.git('log', '-1', '--format=%s')).toBe(
-      "Merge branch 'beta' into uchild/billing/sync-2",
+      "Merge branch 'beta' into under/billing/sync-2",
     );
     expect(repo.prs[1]).toMatchObject({
       baseRefName: 'feature/umbrella/billing',
@@ -187,7 +199,7 @@ describe('syncs', () => {
     const sync = unwrap(await u.createSync({ umbrella: 'billing', pr: true }));
 
     expect(sync).toMatchObject({
-      branch: 'uchild/billing/sync',
+      branch: 'under/billing/sync',
       conflictedFiles: ['app.ts'],
       pushed: false,
       pr: null,
@@ -202,9 +214,11 @@ describe('syncs', () => {
     repo.commit('other', { 'other.ts': 'other\n' });
     repo.git('push', '--quiet', '-u', 'origin', 'feature/other');
 
-    const sync = unwrap(await u.createSync({ umbrella: 'billing', from: 'feature/other' }));
+    const sync = unwrap(
+      await u.createSync({ umbrella: 'billing', from: 'feature/other' }),
+    );
 
-    expect(sync.branch).toBe('uchild/billing/sync-feature-other');
+    expect(sync.branch).toBe('under/billing/sync-feature-other');
   });
 
   test('syncs a dependent umbrella from the branch it depends on, and warns when syncing from the root base', async () => {
@@ -219,16 +233,18 @@ describe('syncs', () => {
     const fromA = unwrap(await u.createSync({ umbrella: 'b' }));
 
     expect(fromA).toMatchObject({
-      branch: 'uchild/b/sync',
+      branch: 'under/b/sync',
       source: 'feature/umbrella/a',
       warnings: [],
     });
 
     repo.git('checkout', '--quiet', 'feature/umbrella/b');
 
-    const fromBeta = unwrap(await u.createSync({ umbrella: 'b', from: 'beta' }));
+    const fromBeta = unwrap(
+      await u.createSync({ umbrella: 'b', from: 'beta' }),
+    );
 
-    expect(fromBeta.branch).toBe('uchild/b/sync-2');
+    expect(fromBeta.branch).toBe('under/b/sync-2');
     expect(fromBeta.warnings).toHaveLength(1);
   });
 
@@ -244,7 +260,9 @@ describe('syncs', () => {
     prA.state = 'merged';
     repo.git('push', '--quiet', 'origin', '--delete', 'feature/umbrella/a');
 
-    const synced = unwrap(await u.syncWithParent({ branch: 'feature/umbrella/b' }));
+    const synced = unwrap(
+      await u.syncWithParent({ branch: 'feature/umbrella/b' }),
+    );
 
     expect(synced).toMatchObject({
       parent: 'beta',
@@ -271,7 +289,7 @@ describe('sync diff', () => {
     repo.git('add', 'app.ts');
     repo.git('commit', '--quiet', '--no-edit');
     repo.commit('manual edit', { 'README.md': 'edited\n' });
-    repo.git('push', '--quiet', '-u', 'origin', 'uchild/billing/sync');
+    repo.git('push', '--quiet', '-u', 'origin', 'under/billing/sync');
 
     return u;
   }
@@ -293,27 +311,42 @@ describe('sync diff', () => {
     expect(section?.diff).toContain('-<<<<<<< feature/umbrella/billing');
     expect(section?.diff).toContain('->>>>>>> beta');
     expect(section?.diff).toContain('+edited');
-    expect(section?.diff).not.toMatch(/[\da-f]{40}/);
+    expect(section?.diff).not.toMatch(shaRegex);
   });
 
   test('uses HEAD^2 and the compare API in CI mode', async () => {
     await createConflictedSync();
 
     // GitHub checks out a merge of the PR head into the base
-    repo.git('checkout', '--quiet', '--detach', 'origin/feature/umbrella/billing');
-    repo.git('merge', '--quiet', '--no-ff', '--no-edit', 'origin/uchild/billing/sync');
+    repo.git(
+      'checkout',
+      '--quiet',
+      '--detach',
+      'origin/feature/umbrella/billing',
+    );
+    repo.git(
+      'merge',
+      '--quiet',
+      '--no-ff',
+      '--no-edit',
+      'origin/under/billing/sync',
+    );
 
     const u = createTestUmbrella(repo);
     const result = unwrap(
       await u.syncDiff({ mode: 'ci', base: 'feature/umbrella/billing' }),
     );
 
-    expect(result.head).toBe(repo.git('rev-parse', 'origin/uchild/billing/sync'));
+    expect(result.head).toBe(
+      repo.git('rev-parse', 'origin/under/billing/sync'),
+    );
     expect(result.sections[0]?.mergeBase).toBeTruthy();
     expect(result.sections[0]?.conflictedFiles).toEqual(['app.ts']);
     expect(result.sections[0]?.diff).toContain('+edited');
 
-    const posted = unwrap(await u.postSyncDiffComment({ prNumber: 102, result }));
+    const posted = unwrap(
+      await u.postSyncDiffComment({ prNumber: 102, result }),
+    );
 
     expect(posted.body).toContain('## Sync diff');
     expect(repo.comments).toHaveLength(1);
@@ -340,7 +373,13 @@ describe('sync diff', () => {
     repo.commit('one', { 'one.ts': 'one\n' });
     repo.git('checkout', '--quiet', '-b', 'feature/two', 'beta');
     repo.commit('two', { 'two.ts': 'two\n' });
-    repo.git('checkout', '--quiet', '-b', 'uchild/billing/sync-many', 'feature/umbrella/billing');
+    repo.git(
+      'checkout',
+      '--quiet',
+      '-b',
+      'under/billing/sync-many',
+      'feature/umbrella/billing',
+    );
     repo.git('merge', '--quiet', '--no-ff', '--no-edit', 'feature/one');
     repo.git('merge', '--quiet', '--no-ff', '--no-edit', 'feature/two');
 
@@ -354,14 +393,45 @@ describe('sync diff', () => {
     expect(result.sections.every((section) => section.diff === '')).toBe(true);
   });
 
+  test('does not mistake PR merges of the base history for sync merges', async () => {
+    const { u } = await setupUmbrella();
+
+    repo.git('checkout', '--quiet', '-b', 'feature/merged-pr', 'beta');
+    repo.commit('pr work', { 'pr.ts': 'pr\n' });
+    repo.git('checkout', '--quiet', 'beta');
+    repo.git(
+      'merge',
+      '--quiet',
+      '--no-ff',
+      '-m',
+      'Merge pull request #5 from acme/feature/merged-pr',
+      'feature/merged-pr',
+    );
+
+    // created from the newer base instead of the umbrella
+    repo.git('checkout', '--quiet', '-b', 'under/billing/sync');
+    repo.commit('wrong start');
+
+    expect(await u.syncDiff({ mode: 'local' })).toMatchObject({
+      ok: false,
+      error: { code: 'no-merges-found' },
+    });
+  });
+
   test('ignores merges of the umbrella itself', async () => {
     const u = await createConflictedSync();
 
     repo.git('checkout', '--quiet', 'feature/umbrella/billing');
     repo.commit('umbrella moved', { 'umbrella.ts': 'u\n' });
     repo.git('push', '--quiet');
-    repo.git('checkout', '--quiet', 'uchild/billing/sync');
-    repo.git('merge', '--quiet', '--no-ff', '--no-edit', 'feature/umbrella/billing');
+    repo.git('checkout', '--quiet', 'under/billing/sync');
+    repo.git(
+      'merge',
+      '--quiet',
+      '--no-ff',
+      '--no-edit',
+      'feature/umbrella/billing',
+    );
     repo.git('push', '--quiet');
 
     const result = unwrap(await u.syncDiff({ mode: 'local' }));
@@ -394,7 +464,9 @@ describe('verify', () => {
     const { u } = await setupUmbrella();
 
     expect(
-      unwrap(await u.verify({ head: 'uchild/billing/a', base: 'beta', prNumber: 5 })),
+      unwrap(
+        await u.verify({ head: 'under/billing/a', base: 'beta', prNumber: 5 }),
+      ),
     ).toMatchObject({
       kind: 'child',
       errors: [
@@ -406,23 +478,39 @@ describe('verify', () => {
     });
 
     expect(
-      unwrap(await u.verify({ head: 'uchild/billing/a', base: 'feature/stacked/other' })),
+      unwrap(
+        await u.verify({
+          head: 'under/billing/a',
+          base: 'feature/stacked/other',
+        }),
+      ),
     ).toMatchObject({ errors: [{ code: 'child-base-mismatch' }] });
 
     expect(
-      unwrap(await u.verify({ head: 'uchild/billing/sync-2', base: 'feature/stacked/billing' })),
+      unwrap(
+        await u.verify({
+          head: 'under/billing/sync-2',
+          base: 'feature/stacked/billing',
+        }),
+      ),
     ).toMatchObject({ kind: 'sync', errors: [], parentPr: { number: 101 } });
 
     expect(
-      unwrap(await u.verify({ head: 'feature/x', base: 'feature/umbrella/billing' })),
+      unwrap(
+        await u.verify({ head: 'feature/x', base: 'feature/umbrella/billing' }),
+      ),
     ).toMatchObject({ errors: [{ code: 'head-not-child' }] });
 
-    expect(unwrap(await u.verify({ head: 'feature/x', base: 'beta' }))).toMatchObject({
+    expect(
+      unwrap(await u.verify({ head: 'feature/x', base: 'beta' })),
+    ).toMatchObject({
       kind: null,
       errors: [],
     });
 
-    expect(unwrap(await u.verify({ head: 'chore/umbrella/x', base: 'beta' }))).toMatchObject({
+    expect(
+      unwrap(await u.verify({ head: 'chore/umbrella/x', base: 'beta' })),
+    ).toMatchObject({
       errors: [{ code: 'invalid-branch-name' }],
     });
   });
@@ -441,11 +529,15 @@ describe('verify', () => {
     ).toMatchObject({ errors: [{ code: 'umbrella-unreviewed-commits' }] });
 
     expect(
-      unwrap(await u.verify({ head: 'feature/umbrella/billing', base: 'beta' })),
+      unwrap(
+        await u.verify({ head: 'feature/umbrella/billing', base: 'beta' }),
+      ),
     ).toMatchObject({ kind: 'umbrella', errors: [] });
 
     expect(
-      unwrap(await u.verify({ head: 'feature/umbrella/billing', base: 'master' })),
+      unwrap(
+        await u.verify({ head: 'feature/umbrella/billing', base: 'master' }),
+      ),
     ).toMatchObject({ errors: [{ code: 'umbrella-base-mismatch' }] });
   });
 
@@ -458,7 +550,10 @@ describe('verify', () => {
     unwrap(await u.createUmbrella({ name: 'b', on: 'feature/umbrella/a' }));
 
     const result = unwrap(
-      await u.verify({ head: 'feature/umbrella/b', base: 'feature/umbrella/a' }),
+      await u.verify({
+        head: 'feature/umbrella/b',
+        base: 'feature/umbrella/a',
+      }),
     );
 
     expect(result).toMatchObject({
@@ -477,7 +572,12 @@ describe('verify', () => {
     const fresh = createTestUmbrella(repo);
 
     expect(
-      unwrap(await fresh.verify({ head: 'feature/umbrella/b', base: 'feature/umbrella/a' })),
+      unwrap(
+        await fresh.verify({
+          head: 'feature/umbrella/b',
+          base: 'feature/umbrella/a',
+        }),
+      ),
     ).toMatchObject({ errors: [{ code: 'umbrella-base-merged' }] });
   });
 });
@@ -486,7 +586,7 @@ describe('PR linking', () => {
   test('links the child in the umbrella PR and the umbrella in the child PR', async () => {
     const { u } = await setupUmbrella();
     const child = repo.addPr({
-      headRefName: 'uchild/billing/a',
+      headRefName: 'under/billing/a',
       baseRefName: 'feature/umbrella/billing',
       body: '## PR motivations\n\nStuff',
     });
@@ -497,13 +597,22 @@ describe('PR linking', () => {
         parentBranch: 'feature/umbrella/billing',
       }),
     );
-    unwrap(await u.addParentLinkToChildPr({ childPr: child.number, parentPr: 101 }));
+    unwrap(
+      await u.addParentLinkToChildPr({ childPr: child.number, parentPr: 101 }),
+    );
 
     expect(repo.prs[0]?.body).toContain(`- #${child.number}`);
-    expect(child.body).toBe('## Parent PR\n\n- #101\n\n## PR motivations\n\nStuff');
+    expect(child.body).toBe(
+      '## Parent PR\n\n- #101\n\n## PR motivations\n\nStuff',
+    );
 
     expect(
-      unwrap(await u.addParentLinkToChildPr({ childPr: child.number, parentPr: 101 })),
+      unwrap(
+        await u.addParentLinkToChildPr({
+          childPr: child.number,
+          parentPr: 101,
+        }),
+      ),
     ).toEqual({ changed: false });
   });
 });

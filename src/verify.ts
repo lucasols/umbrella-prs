@@ -173,7 +173,11 @@ export async function verifyPr(
     let historyBase = parsedHead.base;
 
     if (base !== parsedHead.base) {
-      const chain = getDependencyChain(base, parsedHead.base, await getOpenPrs());
+      const chain = getDependencyChain(
+        base,
+        parsedHead.base,
+        await getOpenPrs(),
+      );
       const dependency = chain.ok ? chain.chain[0] : undefined;
 
       if (dependency) {

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 
+const safeArgRegex = /^[\w@%+=:,./-]+$/;
+
 export type ExecResult = {
   code: number;
   stdout: string;
@@ -16,7 +18,11 @@ export const defaultExec: Exec = (cmd, args, options = {}) =>
   new Promise((resolve) => {
     const child = spawn(cmd, args, {
       cwd: options.cwd,
-      env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0' },
+      env: {
+        ...process.env,
+        GH_PROMPT_DISABLED: '1',
+        GIT_TERMINAL_PROMPT: '0',
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -62,7 +68,7 @@ export function formatCommand(cmd: string, args: readonly string[]) {
 }
 
 function quoteArg(arg: string) {
-  if (/^[\w@%+=:,./-]+$/.test(arg)) return arg;
+  if (safeArgRegex.test(arg)) return arg;
 
   return `'${arg.replaceAll("'", `'\\''`)}'`;
 }

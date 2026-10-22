@@ -1,5 +1,7 @@
 import { CommandError, formatCommand, type Exec } from './exec';
 
+const versionRegex = /(\d+)\.(\d+)/;
+
 export type Git = ReturnType<typeof createGit>;
 
 export function createGit({
@@ -73,7 +75,7 @@ export function createGit({
 
     async version(): Promise<[number, number] | null> {
       const result = await run(['--version']);
-      const match = /(\d+)\.(\d+)/.exec(result.stdout);
+      const match = versionRegex.exec(result.stdout);
 
       if (!match) return null;
 
@@ -124,7 +126,11 @@ export function createGit({
     },
 
     async hasUncommittedChanges() {
-      const out = await runOk(['status', '--porcelain', '--untracked-files=no']);
+      const out = await runOk([
+        'status',
+        '--porcelain',
+        '--untracked-files=no',
+      ]);
 
       return out.trim().length > 0;
     },
@@ -233,7 +239,12 @@ export function createGit({
 
     /** `null` when the commit has no second parent */
     async secondParent(ref: string) {
-      const result = await run(['rev-parse', '--verify', '--quiet', `${ref}^2`]);
+      const result = await run([
+        'rev-parse',
+        '--verify',
+        '--quiet',
+        `${ref}^2`,
+      ]);
 
       return result.code === 0 ? result.stdout.trim() : null;
     },

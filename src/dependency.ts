@@ -28,7 +28,8 @@ export function getDependencyChain<T extends PrInfo>(
   let current = branch;
 
   for (;;) {
-    if (visited.has(current)) return { ok: false, reason: 'cycle', branch: current };
+    if (visited.has(current))
+      return { ok: false, reason: 'cycle', branch: current };
 
     if (chain.length >= maxDepth) {
       return { ok: false, reason: 'too-deep', branch: current };
@@ -81,7 +82,8 @@ export async function resolveCurrentBase<T extends PrInfo>({
   /** Whether the branch was merged or deleted */
   isBranchGone: (branch: string) => Promise<boolean>;
 }): Promise<CurrentBase<T>> {
-  const pr = openPrs.find((item) => item.headRefName === umbrellaBranch) ?? null;
+  const pr =
+    openPrs.find((item) => item.headRefName === umbrellaBranch) ?? null;
   const result: CurrentBase<T> = {
     base: rootBase,
     rootBase,

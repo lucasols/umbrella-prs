@@ -1,8 +1,10 @@
 import type { ResolvedConfig } from './config';
 import { err, ok, type Result } from './result';
 
+const digitsRegex = /^\d+$/;
+
 /**
- * - `umbrella`: `<type>/umbrella/<name>` and `uchild/<name>/<child>`
+ * - `umbrella`: `<type>/umbrella/<name>` and `under/<name>/<child>`
  * - `legacy`: `<type>/stacked/<name>` and `stack/<name>/<child>`
  */
 export type BranchFormat = 'umbrella' | 'legacy';
@@ -15,6 +17,9 @@ export type ParsedUmbrella = {
   name: string;
   fullName: string;
 };
+
+export type SyncInfo =
+  { index: number; label: null } | { index: null; label: string };
 
 export type ParsedChild = {
   kind: 'child';
@@ -30,31 +35,13 @@ export type ParsedChild = {
   fullName: string;
 };
 
-export type ParsedBranch = ParsedUmbrella | ParsedChild;
-
-export type SyncInfo =
-  | { index: number; label: null }
-  | { index: null; label: string };
-
-export type NamingError = {
-  code:
-    | 'not-umbrella-workflow'
-    | 'invalid-segments'
-    | 'unknown-type'
-    | 'empty-name'
-    | 'reserved-name'
-    | 'already-exists';
-  message: string;
-  fix?: string;
-};
-
 const umbrellaMarker: Record<BranchFormat, string> = {
   umbrella: 'umbrella',
   legacy: 'stacked',
 };
 
 const childPrefix: Record<BranchFormat, string> = {
-  umbrella: 'uchild',
+  umbrella: 'under',
   legacy: 'stack',
 };
 
@@ -69,10 +56,12 @@ export function parseSyncName(name: string): SyncInfo | null {
 
   if (suffix === undefined) return { index: 1, label: null };
 
-  if (/^\d+$/.test(suffix)) return { index: Number(suffix), label: null };
+  if (digitsRegex.test(suffix)) return { index: Number(suffix), label: null };
 
   return { index: null, label: suffix };
 }
+
+export type ParsedBranch = ParsedUmbrella | ParsedChild;
 
 /** Returns `null` when the branch is not part of the umbrella workflow */
 export function parseBranch(
@@ -83,6 +72,18 @@ export function parseBranch(
 
   return result.ok ? result.value : null;
 }
+
+export type NamingError = {
+  code:
+    | 'not-umbrella-workflow'
+    | 'invalid-segments'
+    | 'unknown-type'
+    | 'empty-name'
+    | 'reserved-name'
+    | 'already-exists';
+  message: string;
+  fix?: string;
+};
 
 export function parseBranchStrict(
   branch: string,
@@ -208,7 +209,10 @@ export function formatSyncBranch({
 
 /** Lowercases and replaces anything other than `a-z`, `0-9` and `-` with `-` */
 export function normalizeBranchSegment(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-');
 }
 
 type BranchList = readonly (string | ParsedBranch)[];

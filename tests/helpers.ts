@@ -6,12 +6,48 @@ import type { UmbrellaConfig } from '../src/config';
 import { defaultExec, type Exec, type ExecResult } from '../src/exec';
 import { createUmbrellaPrs } from '../src/umbrella';
 
+const versionRegex = /(\d+)\.(\d+)/;
+const shaRegex = /^[\da-f]{40}$/;
+const compareEndpointRegex = /compare\/(.+)\.\.\.(.+)\?per_page=1$/;
+const issueCommentsEndpointRegex = /issues\/(\d+)\/comments$/;
+const commentEndpointRegex = /issues\/comments\/(\d+)$/;
+
 export const testConfig: UmbrellaConfig = {
   types: { feature: 'beta', 'prod-feature': 'master' },
   repo: 'acme/app',
   autoApprove: { users: ['lucasols'] },
   diff: { exclude: ['pnpm-lock.yaml'] },
 };
+
+const gitEnv = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'Test',
+  GIT_AUTHOR_EMAIL: 'test@example.com',
+  GIT_COMMITTER_NAME: 'Test',
+  GIT_COMMITTER_EMAIL: 'test@example.com',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+};
+
+/** First git >= 2.40 found, so the CI mode (`merge-tree --merge-base`) can be tested */
+export const gitBin = findGit();
+
+function findGit() {
+  for (const candidate of ['git', '/usr/bin/git', '/opt/homebrew/bin/git']) {
+    try {
+      const out = execFileSync(candidate, ['--version'], { encoding: 'utf8' });
+      const match = versionRegex.exec(out);
+
+      if (match && (Number(match[1]) > 2 || Number(match[2]) >= 40)) {
+        return candidate;
+      }
+    } catch {
+      // not installed
+    }
+  }
+
+  return 'git';
+}
 
 export type FakePr = {
   number: number;
@@ -34,21 +70,13 @@ export type TestRepo = {
   prs: FakePr[];
   comments: { id: number; pr: number; body: string }[];
   approvals: number[];
-  addPr: (pr: Partial<FakePr> & { headRefName: string; baseRefName: string }) => FakePr;
+  addPr: (
+    pr: Partial<FakePr> & { headRefName: string; baseRefName: string },
+  ) => FakePr;
   exec: Exec;
   /** Commands run by the lib */
   calls: string[][];
   cleanup: () => void;
-};
-
-const gitEnv = {
-  ...process.env,
-  GIT_AUTHOR_NAME: 'Test',
-  GIT_AUTHOR_EMAIL: 'test@example.com',
-  GIT_COMMITTER_NAME: 'Test',
-  GIT_COMMITTER_EMAIL: 'test@example.com',
-  GIT_CONFIG_GLOBAL: '/dev/null',
-  GIT_CONFIG_NOSYSTEM: '1',
 };
 
 export function createTestRepo(): TestRepo {
@@ -59,7 +87,7 @@ export function createTestRepo(): TestRepo {
   mkdirSync(dir);
 
   function runGit(cwd: string, args: string[]) {
-    return execFileSync('git', args, {
+    return execFileSync(gitBin, args, {
       cwd,
       env: gitEnv,
       encoding: 'utf8',
@@ -67,7 +95,13 @@ export function createTestRepo(): TestRepo {
     });
   }
 
-  runGit(root, ['init', '--quiet', '--bare', '--initial-branch=master', remoteDir]);
+  runGit(root, [
+    'init',
+    '--quiet',
+    '--bare',
+    '--initial-branch=master',
+    remoteDir,
+  ]);
   runGit(dir, ['init', '--quiet', '--initial-branch=master']);
   runGit(dir, ['config', 'user.name', 'Test']);
   runGit(dir, ['config', 'user.email', 'test@example.com']);
@@ -76,21 +110,21 @@ export function createTestRepo(): TestRepo {
 
   const git = (...args: string[]) => runGit(dir, args).trim();
 
-  const write = (file: string, content: string) => {
+  function write(file: string, content: string) {
     const filePath = path.join(dir, file);
 
     mkdirSync(path.dirname(filePath), { recursive: true });
     writeFileSync(filePath, content);
-  };
+  }
 
-  const commit = (message: string, files: Record<string, string> = {}) => {
+  function commit(message: string, files: Record<string, string> = {}) {
     for (const [file, content] of Object.entries(files)) write(file, content);
 
     git('add', '-A');
     git('commit', '--quiet', '--allow-empty', '-m', message);
 
     return git('rev-parse', 'HEAD');
-  };
+  }
 
   commit('initial', { 'app.ts': lines(10), 'README.md': 'readme\n' });
   git('push', '--quiet', '-u', 'origin', 'master');
@@ -103,7 +137,9 @@ export function createTestRepo(): TestRepo {
   const calls: string[][] = [];
   let nextComment = 1;
 
-  function addPr(pr: Partial<FakePr> & { headRefName: string; baseRefName: string }) {
+  function addPr(
+    pr: Partial<FakePr> & { headRefName: string; baseRefName: string },
+  ) {
     const number = 100 + prs.length + 1;
     const created: FakePr = {
       number,
@@ -136,12 +172,15 @@ export function createTestRepo(): TestRepo {
   }
 
   function resolveRemoteRef(ref: string) {
-    if (/^[\da-f]{40}$/.test(ref)) return ref;
+    if (shaRegex.test(ref)) return ref;
 
     return runGit(remoteDir, ['rev-parse', ref]).trim();
   }
 
-  function fakeGh(args: readonly string[], input: string | undefined): ExecResult {
+  function fakeGh(
+    args: readonly string[],
+    input: string | undefined,
+  ): ExecResult {
     const [cmd, sub] = args;
 
     if (cmd === 'repo' && sub === 'view') return ok('acme/app\n');
@@ -182,7 +221,9 @@ export function createTestRepo(): TestRepo {
       const head = getFlag(args, '--head') ?? '';
       const base = getFlag(args, '--base') ?? '';
 
-      if (prs.some((item) => item.state === 'open' && item.headRefName === head)) {
+      if (
+        prs.some((item) => item.state === 'open' && item.headRefName === head)
+      ) {
         return fail('a pull request already exists');
       }
 
@@ -211,7 +252,7 @@ export function createTestRepo(): TestRepo {
       const method = getFlag(args, '--method');
       const endpoint = args.find((arg) => arg.startsWith('repos/')) ?? '';
 
-      const compare = /compare\/(.+)\.\.\.(.+)\?per_page=1$/.exec(endpoint);
+      const compare = compareEndpointRegex.exec(endpoint);
 
       if (compare?.[1] && compare[2]) {
         const a = resolveRemoteRef(decodeURIComponent(compare[1]));
@@ -220,7 +261,7 @@ export function createTestRepo(): TestRepo {
         return ok(`${runGit(remoteDir, ['merge-base', a, b]).trim()}\n`);
       }
 
-      const issueComments = /issues\/(\d+)\/comments$/.exec(endpoint);
+      const issueComments = issueCommentsEndpointRegex.exec(endpoint);
 
       if (issueComments?.[1]) {
         const number = Number(issueComments[1]);
@@ -233,7 +274,7 @@ export function createTestRepo(): TestRepo {
         );
       }
 
-      const deleteComment = /issues\/comments\/(\d+)$/.exec(endpoint);
+      const deleteComment = commentEndpointRegex.exec(endpoint);
 
       if (method === 'DELETE' && deleteComment?.[1]) {
         const id = Number(deleteComment[1]);
@@ -253,7 +294,7 @@ export function createTestRepo(): TestRepo {
 
     if (cmd === 'gh') return fakeGh(args, options?.input);
 
-    return defaultExec(cmd, args, {
+    return defaultExec(cmd === 'git' ? gitBin : cmd, args, {
       ...options,
       cwd: options?.cwd ?? dir,
     });

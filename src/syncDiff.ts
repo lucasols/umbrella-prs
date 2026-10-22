@@ -2,7 +2,11 @@ import { toPathspec } from './childDiff';
 import type { Git } from './git';
 import type { GitHub } from './github';
 
-export type SyncDiffMode = 'ci' | 'local';
+const shaRegex = /^[\da-f]{40,64}$/;
+const remoteTrackingMergeRegex = /^Merge remote-tracking branch '([^']+)'/;
+const branchMergeRegex = /^Merge branch '([^']+)'/;
+const githubPrMergeRegex = /^Merge pull request #\d+ from /;
+const pullRequestMergeRegex = /^Merge pull request #\d+ from [^/\s]+\/(\S+)/;
 
 export type SyncDiffSection = {
   /** Branch merged into the PR, from the merge commit message or `--right` */
@@ -43,6 +47,8 @@ type MergeCommit = {
   label: string | null;
 };
 
+export type SyncDiffMode = 'ci' | 'local';
+
 export type GetSyncDiffOptions = {
   mode: SyncDiffMode;
   /** The PR head commit */
@@ -71,14 +77,22 @@ export async function getSyncDiff({
   { ok: true; value: SyncDiffResult } | { ok: false; error: SyncDiffError }
 > {
   const version = await git.version();
+  // CI needs `--merge-base` (2.40), locally merge-tree computes it (2.38)
+  const minMinor = mode === 'ci' ? 40 : 38;
 
-  if (version && (version[0] < 2 || (version[0] === 2 && version[1] < 38))) {
+  if (
+    version &&
+    (version[0] < 2 || (version[0] === 2 && version[1] < minMinor))
+  ) {
     return {
       ok: false,
       error: {
         code: 'git-too-old',
-        message: `git >= 2.38 is required for \`git merge-tree --write-tree\`, found ${version.join('.')}`,
-        fix: 'Update git, e.g. `brew upgrade git`',
+        message: `git >= 2.${minMinor} is required for \`git merge-tree --write-tree${mode === 'ci' ? ' --merge-base' : ''}\`, found ${version.join('.')}`,
+        fix:
+          mode === 'ci' ?
+            'Use a runner with git >= 2.40 (ubuntu-latest has it)'
+          : 'Update git, e.g. `brew upgrade git`',
       },
     };
   }
@@ -92,6 +106,11 @@ export async function getSyncDiff({
     return git.mergeBase(a, b);
   }
 
+  /** CI uses the GitHub API, which takes branch names, locally the remote ref is used */
+  function modeRef(ref: { local: string; forApi: string }) {
+    return mode === 'ci' ? ref.forApi : ref.local;
+  }
+
   async function ensureCommits(shas: (string | null)[]) {
     if (mode !== 'ci') return;
 
@@ -102,13 +121,19 @@ export async function getSyncDiff({
     }
 
     if (missing.length > 0) {
-      await git.runOk(['fetch', '--quiet', '--depth=1', git.remote, ...missing]);
+      await git.runOk([
+        'fetch',
+        '--quiet',
+        '--depth=1',
+        git.remote,
+        ...missing,
+      ]);
     }
   }
 
   // the left side merged by the PR, changes that landed in it after the sync
   // don't show up in the diff
-  const mergedLeft = await getMergeBase(leftRef.forApi, headSha);
+  const mergedLeft = await getMergeBase(modeRef(leftRef), headSha);
 
   if (!mergedLeft) {
     return noMerges(`"${left}" and the PR head have no common ancestor`);
@@ -116,7 +141,7 @@ export async function getSyncDiff({
 
   if (right !== undefined) {
     const rightRef = await resolveRef(git, right);
-    const mergedRight = await getMergeBase(rightRef.forApi, headSha);
+    const mergedRight = await getMergeBase(modeRef(rightRef), headSha);
 
     if (!mergedRight) {
       return noMerges(`"${right}" and the PR head have no common ancestor`);
@@ -131,7 +156,14 @@ export async function getSyncDiff({
     });
 
     return section.ok ?
-        { ok: true, value: { strategy: 'combined', head: headSha, sections: [section.value] } }
+        {
+          ok: true,
+          value: {
+            strategy: 'combined',
+            head: headSha,
+            sections: [section.value],
+          },
+        }
       : section;
   }
 
@@ -169,7 +201,14 @@ export async function getSyncDiff({
     });
 
     return section.ok ?
-        { ok: true, value: { strategy: 'combined', head: headSha, sections: [section.value] } }
+        {
+          ok: true,
+          value: {
+            strategy: 'combined',
+            head: headSha,
+            sections: [section.value],
+          },
+        }
       : section;
   }
 
@@ -221,6 +260,10 @@ export async function getSyncDiff({
       if (await isAncestorOfLeft(secondParent)) continue;
 
       const message = await git.runOk(['log', '-1', '--format=%B', sha]);
+
+      // PRs merged into a base on GitHub, part of the history the branch was
+      // created from, never a sync merge
+      if (githubPrMergeRegex.test(message)) continue;
 
       result.push({
         sha,
@@ -289,7 +332,7 @@ export async function getSyncDiff({
       .split('\n');
 
     // exits with 1 when there are conflicts, so check the output instead
-    if (!autoMergeTree || !/^[\da-f]{40,64}$/.test(autoMergeTree)) {
+    if (!autoMergeTree || !shaRegex.test(autoMergeTree)) {
       return {
         ok: false,
         error: {
@@ -367,9 +410,7 @@ export function parseMergedBranch(
 ): string | null {
   const firstLine = message.split('\n')[0]?.trim() ?? '';
 
-  const remoteTracking = /^Merge remote-tracking branch '([^']+)'/.exec(
-    firstLine,
-  );
+  const remoteTracking = remoteTrackingMergeRegex.exec(firstLine);
 
   if (remoteTracking?.[1]) {
     const branch = remoteTracking[1];
@@ -379,13 +420,11 @@ export function parseMergedBranch(
       : branch;
   }
 
-  const branch = /^Merge branch '([^']+)'/.exec(firstLine);
+  const branch = branchMergeRegex.exec(firstLine);
 
   if (branch?.[1]) return branch[1];
 
-  const pullRequest = /^Merge pull request #\d+ from [^/\s]+\/(\S+)/.exec(
-    firstLine,
-  );
+  const pullRequest = pullRequestMergeRegex.exec(firstLine);
 
   if (pullRequest?.[1]) return pullRequest[1];
 
@@ -437,11 +476,7 @@ export function renderSyncDiffComment(
         '~~~',
       );
     } else {
-      parts.push(
-        '~~~diff',
-        section.diff.replaceAll('~~~', '\\~\\~\\~'),
-        '~~~',
-      );
+      parts.push('~~~diff', section.diff.replaceAll('~~~', '\\~\\~\\~'), '~~~');
     }
 
     parts.push('');

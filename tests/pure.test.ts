@@ -60,13 +60,13 @@ describe('parseBranch', () => {
       base: 'master',
     });
 
-    expect(parseBranch('uchild/billing/adjust-ui', config)).toEqual({
+    expect(parseBranch('under/billing/adjust-ui', config)).toEqual({
       kind: 'child',
       format: 'umbrella',
       umbrella: 'billing',
       name: 'adjust-ui',
       sync: null,
-      fullName: 'uchild/billing/adjust-ui',
+      fullName: 'under/billing/adjust-ui',
     });
 
     expect(parseBranch('stack/billing/adjust-ui', config)).toMatchObject({
@@ -77,16 +77,18 @@ describe('parseBranch', () => {
   });
 
   test('detects base and labeled syncs', () => {
-    expect(parseBranch('uchild/x/sync', config)).toMatchObject({
+    expect(parseBranch('under/x/sync', config)).toMatchObject({
       sync: { index: 1, label: null },
     });
     expect(parseBranch('stack/x/sync-3', config)).toMatchObject({
       sync: { index: 3, label: null },
     });
-    expect(parseBranch('stack/x/sync-remove-legacy-blocks', config)).toMatchObject({
+    expect(
+      parseBranch('stack/x/sync-remove-legacy-blocks', config),
+    ).toMatchObject({
       sync: { index: null, label: 'remove-legacy-blocks' },
     });
-    expect(parseBranch('uchild/x/synchronize', config)).toMatchObject({
+    expect(parseBranch('under/x/synchronize', config)).toMatchObject({
       sync: null,
     });
   });
@@ -102,7 +104,7 @@ describe('parseBranch', () => {
       ok: false,
       error: { code: 'unknown-type' },
     });
-    expect(parseBranchStrict('uchild/x', config)).toMatchObject({
+    expect(parseBranchStrict('under/x', config)).toMatchObject({
       ok: false,
       error: { code: 'invalid-segments' },
     });
@@ -125,30 +127,40 @@ describe('naming helpers', () => {
   const branches = [
     'feature/stacked/billing',
     'stack/billing/sync',
-    'uchild/billing/sync-2',
+    'under/billing/sync-2',
     'stack/billing/sync-big-refactor',
     'stack/billing/adjust-ui',
-    'uchild/billing/new-api',
-    'uchild/other/sync-7',
+    'under/billing/new-api',
+    'under/other/sync-7',
   ];
 
   test('formats new branches in the umbrella format by default', () => {
-    expect(formatChildBranch({ umbrella: 'x', name: 'y' })).toBe('uchild/x/y');
-    expect(formatChildBranch({ umbrella: 'x', name: 'y', format: 'legacy' })).toBe(
-      'stack/x/y',
+    expect(formatChildBranch({ umbrella: 'x', name: 'y' })).toBe('under/x/y');
+    expect(
+      formatChildBranch({ umbrella: 'x', name: 'y', format: 'legacy' }),
+    ).toBe('stack/x/y');
+    expect(formatSyncBranch({ umbrella: 'x', index: 1 })).toBe('under/x/sync');
+    expect(formatSyncBranch({ umbrella: 'x', index: 4 })).toBe(
+      'under/x/sync-4',
     );
-    expect(formatSyncBranch({ umbrella: 'x', index: 1 })).toBe('uchild/x/sync');
-    expect(formatSyncBranch({ umbrella: 'x', index: 4 })).toBe('uchild/x/sync-4');
   });
 
   test('next sync index uses the numeric syncs of both formats', () => {
     expect(
-      getNextSyncBranchName({ umbrella: 'billing', existingBranches: branches, config }),
-    ).toBe('uchild/billing/sync-3');
+      getNextSyncBranchName({
+        umbrella: 'billing',
+        existingBranches: branches,
+        config,
+      }),
+    ).toBe('under/billing/sync-3');
 
     expect(
-      getNextSyncBranchName({ umbrella: 'new', existingBranches: branches, config }),
-    ).toBe('uchild/new/sync');
+      getNextSyncBranchName({
+        umbrella: 'new',
+        existingBranches: branches,
+        config,
+      }),
+    ).toBe('under/new/sync');
   });
 
   test('lists children of both formats', () => {
@@ -156,10 +168,10 @@ describe('naming helpers', () => {
       getChildrenOf('billing', branches, config).map((child) => child.fullName),
     ).toEqual([
       'stack/billing/sync',
-      'uchild/billing/sync-2',
+      'under/billing/sync-2',
       'stack/billing/sync-big-refactor',
       'stack/billing/adjust-ui',
-      'uchild/billing/new-api',
+      'under/billing/new-api',
     ]);
   });
 
@@ -178,28 +190,56 @@ describe('naming helpers', () => {
 
   test('validates child names across formats', () => {
     expect(
-      validateChildName({ umbrella: 'billing', name: 'Adjust UI', existingBranches: branches, config }),
+      validateChildName({
+        umbrella: 'billing',
+        name: 'Adjust UI',
+        existingBranches: branches,
+        config,
+      }),
     ).toMatchObject({ ok: false, error: { code: 'already-exists' } });
 
     expect(
-      validateChildName({ umbrella: 'billing', name: 'sync-4', existingBranches: branches, config }),
+      validateChildName({
+        umbrella: 'billing',
+        name: 'sync-4',
+        existingBranches: branches,
+        config,
+      }),
     ).toMatchObject({ ok: false, error: { code: 'reserved-name' } });
 
     expect(
-      validateChildName({ umbrella: 'billing', name: 'New Thing!', existingBranches: branches, config }),
+      validateChildName({
+        umbrella: 'billing',
+        name: 'New Thing!',
+        existingBranches: branches,
+        config,
+      }),
     ).toEqual({ ok: true, value: 'new-thing-' });
 
     expect(
-      validateChildName({ umbrella: 'billing', name: ' - ', existingBranches: branches, config }),
+      validateChildName({
+        umbrella: 'billing',
+        name: ' - ',
+        existingBranches: branches,
+        config,
+      }),
     ).toMatchObject({ ok: false, error: { code: 'empty-name' } });
   });
 
   test('validates umbrella names across formats and types', () => {
     expect(
-      validateUmbrellaName({ name: 'billing', existingBranches: branches, config }),
+      validateUmbrellaName({
+        name: 'billing',
+        existingBranches: branches,
+        config,
+      }),
     ).toMatchObject({ ok: false, error: { code: 'already-exists' } });
     expect(
-      validateUmbrellaName({ name: 'Plans', existingBranches: branches, config }),
+      validateUmbrellaName({
+        name: 'Plans',
+        existingBranches: branches,
+        config,
+      }),
     ).toEqual({ ok: true, value: 'plans' });
   });
 
@@ -262,7 +302,7 @@ describe('PR helpers', () => {
   });
 
   test('finds the parent PR in any format with a did you mean', () => {
-    const child = parseBranch('uchild/biling/x', config);
+    const child = parseBranch('under/biling/x', config);
 
     if (child?.kind !== 'child') throw new Error('expected a child');
 
@@ -270,7 +310,7 @@ describe('PR helpers', () => {
 
     expect(findParentPr(child, prs, config)).toMatchObject({
       ok: false,
-      error: { suggestion: 'uchild/billing/x' },
+      error: { suggestion: 'under/billing/x' },
     });
 
     const legacyChild = parseBranch('stack/billing/x', config);
@@ -290,8 +330,8 @@ describe('buildTree', () => {
       [
         pr(1, 'feature/stacked/billing'),
         pr(2, 'stack/billing/a', 'feature/stacked/billing'),
-        pr(3, 'uchild/billing/b', 'feature/stacked/billing'),
-        pr(4, 'uchild/gone/c', 'feature/umbrella/gone'),
+        pr(3, 'under/billing/b', 'feature/stacked/billing'),
+        pr(4, 'under/gone/c', 'feature/umbrella/gone'),
         pr(5, 'feature/plain'),
         pr(6, 'feature/umbrella/v2', 'feature/stacked/billing'),
       ],
@@ -322,31 +362,60 @@ describe('auto-approve', () => {
 
   test('approves base syncs and configured authors only', () => {
     expect(
-      getAutoApproveEligibility({ head: 'uchild/billing/sync-2', base, author: 'x' }, config),
+      getAutoApproveEligibility(
+        { head: 'under/billing/sync-2', base, author: 'x' },
+        config,
+      ),
     ).toMatchObject({ eligible: true });
 
     expect(
-      getAutoApproveEligibility({ head: 'stack/billing/sync', base: 'feature/stacked/billing', author: 'x' }, config),
+      getAutoApproveEligibility(
+        {
+          head: 'stack/billing/sync',
+          base: 'feature/stacked/billing',
+          author: 'x',
+        },
+        config,
+      ),
     ).toMatchObject({ eligible: true });
 
     expect(
-      getAutoApproveEligibility({ head: 'uchild/billing/sync-other', base, author: 'x' }, config),
+      getAutoApproveEligibility(
+        { head: 'under/billing/sync-other', base, author: 'x' },
+        config,
+      ),
     ).toMatchObject({ eligible: false });
 
     expect(
-      getAutoApproveEligibility({ head: 'uchild/billing/sync-other', base, author: 'lucasols' }, config),
+      getAutoApproveEligibility(
+        { head: 'under/billing/sync-other', base, author: 'lucasols' },
+        config,
+      ),
     ).toMatchObject({ eligible: true });
 
     expect(
-      getAutoApproveEligibility({ head: 'uchild/billing/sync', base: 'feature/umbrella/other', author: 'lucasols' }, config),
+      getAutoApproveEligibility(
+        {
+          head: 'under/billing/sync',
+          base: 'feature/umbrella/other',
+          author: 'lucasols',
+        },
+        config,
+      ),
     ).toMatchObject({ eligible: false });
 
     expect(
-      getAutoApproveEligibility({ head: 'uchild/billing/sync', base, author: 'x', draft: true }, config),
+      getAutoApproveEligibility(
+        { head: 'under/billing/sync', base, author: 'x', draft: true },
+        config,
+      ),
     ).toMatchObject({ eligible: false });
 
     expect(
-      getAutoApproveEligibility({ head: 'feature/x', base: 'beta', author: 'lucasols' }, config),
+      getAutoApproveEligibility(
+        { head: 'feature/x', base: 'beta', author: 'lucasols' },
+        config,
+      ),
     ).toMatchObject({ eligible: false });
   });
 });
@@ -375,10 +444,17 @@ describe('dependencies', () => {
   });
 
   test('resolves the current base of an umbrella', async () => {
-    const isBranchGone = async (branch: string) => branch === 'feature/merged';
+    function isBranchGone(branch: string) {
+      return Promise.resolve(branch === 'feature/merged');
+    }
 
     expect(
-      await resolveCurrentBase({ umbrellaBranch: 'feature/umbrella/c', rootBase: 'beta', openPrs: prs, isBranchGone }),
+      await resolveCurrentBase({
+        umbrellaBranch: 'feature/umbrella/c',
+        rootBase: 'beta',
+        openPrs: prs,
+        isBranchGone,
+      }),
     ).toMatchObject({
       base: 'feature/umbrella/b',
       dependsOn: { branch: 'feature/umbrella/b', pr: 2 },
@@ -406,13 +482,15 @@ describe('dependencies', () => {
 
 describe('misc', () => {
   test('parses merged branches from merge commit messages', () => {
-    expect(parseMergedBranch("Merge branch 'beta' into uchild/x/sync")).toBe('beta');
-    expect(parseMergedBranch("Merge remote-tracking branch 'origin/master' into x")).toBe(
-      'master',
+    expect(parseMergedBranch("Merge branch 'beta' into under/x/sync")).toBe(
+      'beta',
     );
-    expect(parseMergedBranch('Merge pull request #12 from acme/feature/x')).toBe(
-      'feature/x',
-    );
+    expect(
+      parseMergedBranch("Merge remote-tracking branch 'origin/master' into x"),
+    ).toBe('master');
+    expect(
+      parseMergedBranch('Merge pull request #12 from acme/feature/x'),
+    ).toBe('feature/x');
     expect(parseMergedBranch('Fix stuff')).toBeNull();
   });
 
@@ -449,11 +527,17 @@ describe('misc', () => {
   test('validates config files', () => {
     expect(parseConfig({ types: { feature: 'beta' } }).ok).toBe(true);
     expect(parseConfig({ types: {} })).toMatchObject({ ok: false });
-    expect(parseConfig({ types: { stack: 'beta' } })).toMatchObject({ ok: false });
-    expect(parseConfig({ types: { feature: 'beta' }, defaultType: 'bug' })).toMatchObject({
+    expect(parseConfig({ types: { stack: 'beta' } })).toMatchObject({
       ok: false,
     });
-    expect(parseConfig({ types: { feature: 'beta' }, autoApprove: { users: 'x' } })).toMatchObject({
+    expect(
+      parseConfig({ types: { feature: 'beta' }, defaultType: 'bug' }),
+    ).toMatchObject({
+      ok: false,
+    });
+    expect(
+      parseConfig({ types: { feature: 'beta' }, autoApprove: { users: 'x' } }),
+    ).toMatchObject({
       ok: false,
     });
   });

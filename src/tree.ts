@@ -1,10 +1,6 @@
 import type { ResolvedConfig } from './config';
 import type { PrInfo } from './github';
-import {
-  parseBranch,
-  type ParsedChild,
-  type ParsedUmbrella,
-} from './naming';
+import { parseBranch, type ParsedChild, type ParsedUmbrella } from './naming';
 
 export type UmbrellaTreeNode<T> = {
   branch: ParsedUmbrella;

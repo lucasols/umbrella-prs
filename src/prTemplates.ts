@@ -8,9 +8,11 @@ import {
 } from './naming';
 import { err, ok, type Result } from './result';
 
-export type PrTemplate = { title: string; body: string };
+const parentPrHeadingRegex = /^#+\s*Parent PR/i;
 
 export const CHILDREN_PRS_HEADING = '## Children PRs';
+
+export type PrTemplate = { title: string; body: string };
 
 export function umbrellaPrTemplate({
   name,
@@ -96,9 +98,7 @@ export function addChildToUmbrellaBody(
   }
 
   const lines = body.split('\n');
-  const headingIndex = lines.findIndex((line) =>
-    line.includes('Children PRs'),
-  );
+  const headingIndex = lines.findIndex((line) => line.includes('Children PRs'));
 
   if (headingIndex === -1) {
     const separator = body.trim() ? '\n\n' : '';
@@ -141,7 +141,7 @@ export function addParentLinkToChildBody(
 
   const lines = body.split('\n');
   const headingIndex = lines.findIndex((line) =>
-    /^#+\s*Parent PR/i.test(line.trim()),
+    parentPrHeadingRegex.test(line.trim()),
   );
 
   if (headingIndex === -1) {

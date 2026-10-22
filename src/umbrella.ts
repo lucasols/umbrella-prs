@@ -4,7 +4,11 @@ import {
   type AutoApproveInput,
 } from './autoApprove';
 import { getBranchDiff } from './childDiff';
-import { resolveConfig, type ResolvedConfig, type UmbrellaConfig } from './config';
+import {
+  resolveConfig,
+  type ResolvedConfig,
+  type UmbrellaConfig,
+} from './config';
 import { CommandError, defaultExec, type Exec } from './exec';
 import { createGit } from './git';
 import { createGitHub, type FullPrInfo, type PrInfo } from './github';
@@ -40,9 +44,54 @@ import {
   type SyncDiffMode,
   type SyncDiffResult,
 } from './syncDiff';
-import { resolveCurrentBase, getDependencyChain, type CurrentBase } from './dependency';
+import {
+  resolveCurrentBase,
+  getDependencyChain,
+  type CurrentBase,
+} from './dependency';
 import { buildTree } from './tree';
 import { verifyPr, type VerifyInput, type VerifyResult } from './verify';
+
+export type OpErrorCode =
+  | 'not-umbrella-branch'
+  | 'umbrella-not-found'
+  | 'child-exists'
+  | 'umbrella-exists'
+  | 'invalid-name'
+  | 'dirty-worktree'
+  | 'detached-head'
+  | 'from-current-not-in-umbrella'
+  | 'unknown-type'
+  | 'parent-pr-not-found'
+  | 'invalid-dependency'
+  | 'merge-conflicts'
+  | 'no-merges-found'
+  | 'git-too-old'
+  | 'git-failed'
+  | 'gh-failed';
+
+export type OpError = { code: OpErrorCode; message: string; fix?: string };
+
+export type OpResult<T> = Result<T, OpError>;
+
+export type CreatedPr = {
+  number: number;
+  url: string;
+  alreadyExisted: boolean;
+};
+
+export type TreeNode = {
+  branch: ParsedUmbrella;
+  pr: FullPrInfo | null;
+  /** Branch this umbrella lands into before the configured base */
+  dependsOn: { branch: string; pr: number | null } | null;
+  children: { branch: ParsedChild; pr: FullPrInfo | null }[];
+};
+
+export type Tree = {
+  umbrellas: TreeNode[];
+  orphans: { branch: ParsedChild; pr: FullPrInfo | null }[];
+};
 
 export type UmbrellaHooks = {
   /** Child PR title and body, e.g. an AI description. Return `null` to use the default template */
@@ -67,43 +116,6 @@ export type UmbrellaHooks = {
   log?: (message: string) => void;
 };
 
-export type OpErrorCode =
-  | 'not-umbrella-branch'
-  | 'umbrella-not-found'
-  | 'child-exists'
-  | 'umbrella-exists'
-  | 'invalid-name'
-  | 'dirty-worktree'
-  | 'detached-head'
-  | 'from-current-not-in-umbrella'
-  | 'unknown-type'
-  | 'parent-pr-not-found'
-  | 'invalid-dependency'
-  | 'merge-conflicts'
-  | 'no-merges-found'
-  | 'git-too-old'
-  | 'git-failed'
-  | 'gh-failed';
-
-export type OpError = { code: OpErrorCode; message: string; fix?: string };
-
-export type OpResult<T> = Result<T, OpError>;
-
-export type CreatedPr = { number: number; url: string; alreadyExisted: boolean };
-
-export type TreeNode = {
-  branch: ParsedUmbrella;
-  pr: FullPrInfo | null;
-  /** Branch this umbrella lands into before the configured base */
-  dependsOn: { branch: string; pr: number | null } | null;
-  children: { branch: ParsedChild; pr: FullPrInfo | null }[];
-};
-
-export type Tree = {
-  umbrellas: TreeNode[];
-  orphans: { branch: ParsedChild; pr: FullPrInfo | null }[];
-};
-
 export type CreateUmbrellaPrsOptions = {
   config: UmbrellaConfig;
   hooks?: UmbrellaHooks;
@@ -121,11 +133,11 @@ export function createUmbrellaPrs({
   cwd,
   exec = defaultExec,
 }: CreateUmbrellaPrsOptions) {
-  const resolved = resolveConfig(configInput);
+  const resolvedConfig = resolveConfig(configInput);
 
-  if (!resolved.ok) throw new Error(resolved.error.message);
+  if (!resolvedConfig.ok) throw new Error(resolvedConfig.error.message);
 
-  const config: ResolvedConfig = resolved.value;
+  const config: ResolvedConfig = resolvedConfig.value;
 
   const git = createGit({ exec, cwd, remote: config.remote });
   const github = createGitHub({ exec, cwd, repo: config.repo });
@@ -345,7 +357,11 @@ export function createUmbrellaPrs({
     const existing = await github.findOpenPrByHead(head);
 
     if (existing) {
-      return ok({ number: existing.number, url: existing.url, alreadyExisted: true });
+      return ok({
+        number: existing.number,
+        url: existing.url,
+        alreadyExisted: true,
+      });
     }
 
     const template = await getPrTemplate(head);
@@ -392,8 +408,8 @@ export function createUmbrellaPrs({
 
       if (parsed.kind === 'umbrella') {
         const template =
-          (await hooks.generateUmbrellaPr?.({ branch: parsed }))
-          ?? umbrellaPrTemplate({ name: parsed.name });
+          (await hooks.generateUmbrellaPr?.({ branch: parsed })) ??
+          umbrellaPrTemplate({ name: parsed.name });
         const currentBase = await getCurrentBase(parsed);
 
         return ok({ ...template, base: currentBase.base });
@@ -417,8 +433,8 @@ export function createUmbrellaPrs({
           branch: parsed,
           parentPr: parentPr.value,
           baseBranch,
-        }))
-        ?? childPrTemplate({
+        })) ??
+        childPrTemplate({
           parentPr: parentPr.value,
           title: inferTitleFromName(parsed.name),
         });
@@ -431,7 +447,7 @@ export function createUmbrellaPrs({
     type: typeOption,
     name,
     format = 'umbrella',
-    openPr = true,
+    openPr: shouldOpenPr = true,
     draft = false,
     on,
   }: {
@@ -454,7 +470,8 @@ export function createUmbrellaPrs({
   > {
     return attempt(async () => {
       const type = typeOption ?? config.defaultType;
-      const base = Object.hasOwn(config.types, type) ? config.types[type] : undefined;
+      const base =
+        Object.hasOwn(config.types, type) ? config.types[type] : undefined;
 
       if (base === undefined) {
         return err({
@@ -539,7 +556,7 @@ export function createUmbrellaPrs({
         fullName,
       };
 
-      if (!openPr) return ok({ branch, pr: null, dependsOn });
+      if (!shouldOpenPr) return ok({ branch, pr: null, dependsOn });
 
       const pr = await createPrForBranch(fullName, {
         draft,
@@ -591,8 +608,8 @@ export function createUmbrellaPrs({
 
         const parsedCurrent = parseBranch(current.value, config);
         const isInUmbrella =
-          parsedCurrent !== null
-          && (parsedCurrent.kind === 'umbrella' ?
+          parsedCurrent !== null &&
+          (parsedCurrent.kind === 'umbrella' ?
             parsedCurrent.name === umbrella.value.name
           : parsedCurrent.umbrella === umbrella.value.name);
 
@@ -630,7 +647,7 @@ export function createUmbrellaPrs({
     umbrella: umbrellaOption,
     from,
     push = false,
-    pr: openPr = false,
+    pr: shouldOpenPr = false,
   }: {
     umbrella?: string;
     /**
@@ -670,7 +687,10 @@ export function createUmbrellaPrs({
       const existingBranches = await listBranches();
       const warnings: string[] = [];
 
-      if (from !== undefined && !(await git.refExists(await remoteOrLocal(from)))) {
+      if (
+        from !== undefined &&
+        !(await git.refExists(await remoteOrLocal(from)))
+      ) {
         return err({
           code: 'invalid-name',
           message: `Branch "${from}" not found`,
@@ -688,7 +708,11 @@ export function createUmbrellaPrs({
             existingBranches,
             config,
           })
-        : getLabeledSyncBranchName(umbrella.value.name, source, existingBranches);
+        : getLabeledSyncBranchName(
+            umbrella.value.name,
+            source,
+            existingBranches,
+          );
 
       if (currentBase.dependsOn && source !== currentBase.dependsOn.branch) {
         warnings.push(
@@ -719,11 +743,13 @@ export function createUmbrellaPrs({
         warnings,
       };
 
-      if (conflictedFiles.length > 0 || (!push && !openPr)) return ok(result);
+      if (conflictedFiles.length > 0 || (!push && !shouldOpenPr)) {
+        return ok(result);
+      }
 
       await git.push(branch);
 
-      if (!openPr) return ok({ ...result, pushed: true });
+      if (!shouldOpenPr) return ok({ ...result, pushed: true });
 
       const pr = await createPrForBranch(branch);
 
@@ -864,10 +890,15 @@ export function createUmbrellaPrs({
 
       const isPublished = await git.remoteBranchExists(branchName);
       const finalStrategy =
-        strategy === 'auto' ? (isPublished ? 'merge' : 'rebase') : strategy;
+        strategy === 'auto' ?
+          isPublished ? 'merge'
+          : 'rebase'
+        : strategy;
       const parentRef = await remoteOrLocal(parent);
 
-      log(`${finalStrategy === 'merge' ? 'Merging' : 'Rebasing onto'} ${parent}`);
+      log(
+        `${finalStrategy === 'merge' ? 'Merging' : 'Rebasing onto'} ${parent}`,
+      );
 
       const { conflictedFiles } =
         finalStrategy === 'merge' ?
@@ -1052,8 +1083,7 @@ export function createUmbrellaPrs({
       if (options.mode === 'ci') {
         mode = 'ci';
         left = options.base;
-        head =
-          options.headCommit ?? (await git.secondParent('HEAD')) ?? 'HEAD';
+        head = options.headCommit ?? (await git.secondParent('HEAD')) ?? 'HEAD';
       } else {
         mode = 'local';
 
@@ -1080,9 +1110,11 @@ export function createUmbrellaPrs({
         }
 
         head =
-          (await git.localBranchExists(branchName)) ?
-            branchName
-          : `${git.remote}/${branchName}`;
+          (await git.localBranchExists(branchName)) ? branchName
+          : (await git.remoteBranchExists(branchName)) ?
+            `${git.remote}/${branchName}`
+            // any other ref, e.g. the head commit of a merged sync PR
+          : branchName;
       }
 
       const result = await getSyncDiff({
@@ -1142,7 +1174,9 @@ export function createUmbrellaPrs({
     include?: string[];
     exclude?: string[];
     ignoreImportOnly?: boolean;
-  } = {}): Promise<OpResult<{ diff: string; files: string[]; parent: string }>> {
+  } = {}): Promise<
+    OpResult<{ diff: string; files: string[]; parent: string }>
+  > {
     return attempt(async () => {
       const resolved = await resolveParent(branch);
 

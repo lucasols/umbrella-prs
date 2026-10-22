@@ -1,0 +1,29 @@
+name: Auto-approve umbrella child PRs
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  auto-approve:
+    # cheap pre-filter, the CLI applies the real rules (base syncs or autoApprove.users)
+    if: |
+      !github.event.pull_request.draft &&
+      (startsWith(github.event.pull_request.head.ref, 'under/') ||
+       startsWith(github.event.pull_request.head.ref, 'stack/'))
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            umbrella-prs.config.json
+          sparse-checkout-cone-mode: false
+      - name: Approve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx --yes @ls-stack/umbrella-prs@latest ci auto-approve --approve

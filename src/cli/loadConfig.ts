@@ -1,14 +1,15 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { isRecord, parseConfig, type UmbrellaConfig } from '../config';
+import { parseConfig, type UmbrellaConfig } from '../config';
+import { isRecord } from '../utils.typeGuards';
 import { err, ok, type Result } from '../result';
 
 export const CONFIG_FILE_NAME = 'umbrella-prs.config.json';
 export const PACKAGE_JSON_KEY = 'umbrellaPrs';
 
-export type LoadConfigError = { message: string; fix: string };
-
 const configExample = `{ "types": { "feature": "main" } }`;
+
+export type LoadConfigError = { message: string; fix: string };
 
 /**
  * Loads `--config`, or the closest `umbrella-prs.config.json` or package.json

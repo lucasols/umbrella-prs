@@ -1,5 +1,11 @@
 import { splitLines, type Git } from './git';
 
+const fileSectionStartRegex = /(?=^diff --(?:git|cc))/m;
+const hunkHeaderRegex = /^(@+) /;
+const changeMarkerRegex = /[+-]/;
+const importBracesRegex = /^import\s*{/;
+const exportBracesRegex = /^export\s*{/;
+
 export function toPathspec({
   include = [],
   exclude = [],
@@ -46,7 +52,7 @@ export async function getBranchDiff({
 
 /** Removes file sections whose changed lines are all imports/exports */
 export function removeImportOnlyChanges(diff: string): string {
-  const fileSections = diff.split(/(?=^diff --(?:git|cc))/m).filter(Boolean);
+  const fileSections = diff.split(fileSectionStartRegex).filter(Boolean);
   const keptSections: string[] = [];
 
   for (const section of fileSections) {
@@ -61,7 +67,7 @@ export function removeImportOnlyChanges(diff: string): string {
     let prefixLength = 1;
 
     for (const line of lines) {
-      const hunkMatch = /^(@+) /.exec(line);
+      const hunkMatch = hunkHeaderRegex.exec(line);
 
       if (hunkMatch?.[1]) {
         prefixLength = hunkMatch[1].length - 1;
@@ -72,7 +78,7 @@ export function removeImportOnlyChanges(diff: string): string {
     const changedLines = lines.filter((line) => {
       if (line.startsWith('+++') || line.startsWith('---')) return false;
 
-      return /[+-]/.test(line.slice(0, prefixLength));
+      return changeMarkerRegex.test(line.slice(0, prefixLength));
     });
 
     if (changedLines.length === 0) {
@@ -94,12 +100,12 @@ function isImportOrExportLine(content: string): boolean {
   if (!content) return true;
 
   return (
-    content.startsWith('import ')
-    || content.startsWith('export ')
-    || content.startsWith('} from ')
-    || content.includes('= require(')
-    || content.includes('import(')
-    || /^import\s*{/.test(content)
-    || /^export\s*{/.test(content)
+    content.startsWith('import ') ||
+    content.startsWith('export ') ||
+    content.startsWith('} from ') ||
+    content.includes('= require(') ||
+    content.includes('import(') ||
+    importBracesRegex.test(content) ||
+    exportBracesRegex.test(content)
   );
 }
