@@ -5,8 +5,10 @@ export {
 } from './autoApprove';
 export { removeImportOnlyChanges } from './childDiff';
 export {
+  defaultBranchNames,
   parseConfig,
   resolveConfig,
+  type BranchNames,
   type ConfigError,
   type ResolvedConfig,
   type UmbrellaConfig,
@@ -29,7 +31,7 @@ export {
   parseSyncName,
   validateChildName,
   validateUmbrellaName,
-  type BranchFormat,
+  type NamingConfig,
   type NamingError,
   type ParsedBranch,
   type ParsedChild,

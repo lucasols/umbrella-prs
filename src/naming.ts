@@ -3,15 +3,15 @@ import { err, ok, type Result } from './result';
 
 const digitsRegex = /^\d+$/;
 
-/**
- * - `umbrella`: `<type>/umbrella/<name>` and `under/<name>/<child>`
- * - `legacy`: `<type>/stacked/<name>` and `stack/<name>/<child>`
- */
-export type BranchFormat = 'umbrella' | 'legacy';
+export type NamingConfig = Pick<
+  ResolvedConfig,
+  'types' | 'branchNames' | 'aliases'
+>;
 
 export type ParsedUmbrella = {
   kind: 'umbrella';
-  format: BranchFormat;
+  /** `true` when the branch uses one of the config `aliases` */
+  alias: boolean;
   type: string;
   base: string;
   name: string;
@@ -23,7 +23,8 @@ export type SyncInfo =
 
 export type ParsedChild = {
   kind: 'child';
-  format: BranchFormat;
+  /** `true` when the branch uses one of the config `aliases` */
+  alias: boolean;
   /** Name of the umbrella, not its full branch name */
   umbrella: string;
   name: string;
@@ -33,16 +34,6 @@ export type ParsedChild = {
    */
   sync: SyncInfo | null;
   fullName: string;
-};
-
-const umbrellaMarker: Record<BranchFormat, string> = {
-  umbrella: 'umbrella',
-  legacy: 'stacked',
-};
-
-const childPrefix: Record<BranchFormat, string> = {
-  umbrella: 'under',
-  legacy: 'stack',
 };
 
 const syncRegex = /^sync(?:-(.+))?$/;
@@ -66,7 +57,7 @@ export type ParsedBranch = ParsedUmbrella | ParsedChild;
 /** Returns `null` when the branch is not part of the umbrella workflow */
 export function parseBranch(
   branch: string,
-  config: Pick<ResolvedConfig, 'types'>,
+  config: NamingConfig,
 ): ParsedBranch | null {
   const result = parseBranchStrict(branch, config);
 
@@ -87,24 +78,25 @@ export type NamingError = {
 
 export function parseBranchStrict(
   branch: string,
-  config: Pick<ResolvedConfig, 'types'>,
+  config: NamingConfig,
 ): Result<ParsedBranch, NamingError> {
   const segments = branch.split('/');
   const [first, second, third] = segments;
+  const allNames = [config.branchNames, ...config.aliases];
 
-  const childFormat = getFormatByChildPrefix(first);
+  const childIndex = allNames.findIndex((names) => names.child === first);
 
-  if (childFormat) {
+  if (childIndex !== -1) {
     if (segments.length !== 3 || !second || !third) {
       return err({
         code: 'invalid-segments',
-        message: `Child branch "${branch}" must be "${childPrefix[childFormat]}/<umbrella>/<child>"`,
+        message: `Child branch "${branch}" must be "${first}/<umbrella>/<child>"`,
       });
     }
 
     return ok({
       kind: 'child',
-      format: childFormat,
+      alias: childIndex > 0,
       umbrella: second,
       name: third,
       sync: parseSyncName(third),
@@ -112,9 +104,11 @@ export function parseBranchStrict(
     });
   }
 
-  const umbrellaFormat = getFormatByUmbrellaMarker(second);
+  const umbrellaIndex = allNames.findIndex(
+    (names) => names.umbrella === second,
+  );
 
-  if (!umbrellaFormat) {
+  if (umbrellaIndex === -1) {
     return err({
       code: 'not-umbrella-workflow',
       message: `Branch "${branch}" is not an umbrella or umbrella child branch`,
@@ -124,7 +118,7 @@ export function parseBranchStrict(
   if (segments.length !== 3 || !first || !third) {
     return err({
       code: 'invalid-segments',
-      message: `Umbrella branch "${branch}" must be "<type>/${umbrellaMarker[umbrellaFormat]}/<name>"`,
+      message: `Umbrella branch "${branch}" must be "<type>/${second}/<name>"`,
     });
   }
 
@@ -139,7 +133,7 @@ export function parseBranchStrict(
 
   return ok({
     kind: 'umbrella',
-    format: umbrellaFormat,
+    alias: umbrellaIndex > 0,
     type: first,
     base,
     name: third,
@@ -147,64 +141,35 @@ export function parseBranchStrict(
   });
 }
 
-function getFormatByChildPrefix(
-  segment: string | undefined,
-): BranchFormat | null {
-  if (segment === childPrefix.umbrella) return 'umbrella';
-  if (segment === childPrefix.legacy) return 'legacy';
-  return null;
-}
-
-function getFormatByUmbrellaMarker(
-  segment: string | undefined,
-): BranchFormat | null {
-  if (segment === umbrellaMarker.umbrella) return 'umbrella';
-  if (segment === umbrellaMarker.legacy) return 'legacy';
-  return null;
-}
-
 function getOwn(record: Record<string, string>, key: string) {
   return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
-export function formatUmbrellaBranch({
-  type,
-  name,
-  format = 'umbrella',
-}: {
-  type: string;
-  name: string;
-  format?: BranchFormat;
-}): string {
-  return `${type}/${umbrellaMarker[format]}/${name}`;
+type BranchNamesConfig = Pick<ResolvedConfig, 'branchNames'>;
+
+export function formatUmbrellaBranch(
+  { type, name }: { type: string; name: string },
+  config: BranchNamesConfig,
+): string {
+  return `${type}/${config.branchNames.umbrella}/${name}`;
 }
 
-export function formatChildBranch({
-  umbrella,
-  name,
-  format = 'umbrella',
-}: {
-  umbrella: string;
-  name: string;
-  format?: BranchFormat;
-}): string {
-  return `${childPrefix[format]}/${umbrella}/${name}`;
+export function formatChildBranch(
+  { umbrella, name }: { umbrella: string; name: string },
+  config: BranchNamesConfig,
+): string {
+  return `${config.branchNames.child}/${umbrella}/${name}`;
 }
 
 export function formatSyncName(index: number): string {
   return index <= 1 ? 'sync' : `sync-${index}`;
 }
 
-export function formatSyncBranch({
-  umbrella,
-  index,
-  format = 'umbrella',
-}: {
-  umbrella: string;
-  index: number;
-  format?: BranchFormat;
-}): string {
-  return formatChildBranch({ umbrella, name: formatSyncName(index), format });
+export function formatSyncBranch(
+  { umbrella, index }: { umbrella: string; index: number },
+  config: BranchNamesConfig,
+): string {
+  return formatChildBranch({ umbrella, name: formatSyncName(index) }, config);
 }
 
 /** Lowercases and replaces anything other than `a-z`, `0-9` and `-` with `-` */
@@ -217,10 +182,7 @@ export function normalizeBranchSegment(value: string): string {
 
 type BranchList = readonly (string | ParsedBranch)[];
 
-function parseAll(
-  branches: BranchList,
-  config: Pick<ResolvedConfig, 'types'>,
-): ParsedBranch[] {
+function parseAll(branches: BranchList, config: NamingConfig): ParsedBranch[] {
   const parsed: ParsedBranch[] = [];
 
   for (const branch of branches) {
@@ -233,11 +195,11 @@ function parseAll(
   return parsed;
 }
 
-/** Children of the umbrella in any format */
+/** Children of the umbrella, including the ones using aliases */
 export function getChildrenOf(
   umbrella: string,
   branches: BranchList,
-  config: Pick<ResolvedConfig, 'types'>,
+  config: NamingConfig,
 ): ParsedChild[] {
   const children = new Map<string, ParsedChild>();
 
@@ -251,20 +213,20 @@ export function getChildrenOf(
 }
 
 /**
- * Finds the umbrella branch by name in any format. When both formats exist the
- * new format wins
+ * Finds the umbrella branch by name, including aliases. When both exist the
+ * configured `branchNames` win
  */
 export function findUmbrellaBranch(
   umbrella: string,
   branches: BranchList,
-  config: Pick<ResolvedConfig, 'types'>,
+  config: NamingConfig,
 ): ParsedUmbrella | null {
   let found: ParsedUmbrella | null = null;
 
   for (const branch of parseAll(branches, config)) {
     if (branch.kind !== 'umbrella' || branch.name !== umbrella) continue;
 
-    if (!found || (found.format === 'legacy' && branch.format === 'umbrella')) {
+    if (!found || (found.alias && !branch.alias)) {
       found = branch;
     }
   }
@@ -273,19 +235,17 @@ export function findUmbrellaBranch(
 }
 
 /**
- * Next sync branch, using the highest sync index of both formats. Labeled syncs
- * (`sync-<label>`) are ignored
+ * Next sync branch, using the highest sync index, including aliases. Labeled
+ * syncs (`sync-<label>`) are ignored
  */
 export function getNextSyncBranchName({
   umbrella,
   existingBranches,
-  format = 'umbrella',
   config,
 }: {
   umbrella: string;
   existingBranches: BranchList;
-  format?: BranchFormat;
-  config: Pick<ResolvedConfig, 'types'>;
+  config: NamingConfig;
 }): string {
   let maxIndex = 0;
 
@@ -295,7 +255,7 @@ export function getNextSyncBranchName({
     if (index != null && index > maxIndex) maxIndex = index;
   }
 
-  return formatSyncBranch({ umbrella, index: maxIndex + 1, format });
+  return formatSyncBranch({ umbrella, index: maxIndex + 1 }, config);
 }
 
 /** Returns the normalized child name */
@@ -308,7 +268,7 @@ export function validateChildName({
   umbrella: string;
   name: string;
   existingBranches: BranchList;
-  config: Pick<ResolvedConfig, 'types'>;
+  config: NamingConfig;
 }): Result<string, NamingError> {
   const normalized = normalizeBranchSegment(name);
 
@@ -347,7 +307,7 @@ export function validateUmbrellaName({
 }: {
   name: string;
   existingBranches: BranchList;
-  config: Pick<ResolvedConfig, 'types'>;
+  config: NamingConfig;
 }): Result<string, NamingError> {
   const normalized = normalizeBranchSegment(name);
 

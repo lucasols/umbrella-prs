@@ -1,5 +1,5 @@
 import type { ResolvedConfig } from './config';
-import { parseBranch } from './naming';
+import { parseBranch, type NamingConfig } from './naming';
 
 export type AutoApproveInput = {
   head: string;
@@ -21,7 +21,7 @@ export type AutoApproveEligibility = {
  */
 export function getAutoApproveEligibility(
   { head, base, author, draft }: AutoApproveInput,
-  config: Pick<ResolvedConfig, 'types' | 'autoApprove'>,
+  config: NamingConfig & Pick<ResolvedConfig, 'autoApprove'>,
 ): AutoApproveEligibility {
   if (draft) return { eligible: false, reason: 'PR is a draft' };
 

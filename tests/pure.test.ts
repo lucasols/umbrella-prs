@@ -7,6 +7,7 @@ import {
   findUmbrellaBranch,
   formatChildBranch,
   formatSyncBranch,
+  formatUmbrellaBranch,
   getChildrenOf,
   getNextSyncBranchName,
   normalizeBranchSegment,
@@ -32,6 +33,7 @@ const resolvedConfig = resolveConfig({
     'prod-feature': 'master',
     hotfix: 'master',
   },
+  aliases: [{ umbrella: 'stacked', child: 'stack' }],
   autoApprove: { users: ['lucasols'] },
 });
 
@@ -44,10 +46,10 @@ function pr(number: number, headRefName: string, baseRefName = 'beta') {
 }
 
 describe('parseBranch', () => {
-  test('parses both formats of umbrellas and children', () => {
+  test('parses umbrellas and children, including aliases', () => {
     expect(parseBranch('feature/umbrella/billing', config)).toEqual({
       kind: 'umbrella',
-      format: 'umbrella',
+      alias: false,
       type: 'feature',
       base: 'beta',
       name: 'billing',
@@ -56,13 +58,13 @@ describe('parseBranch', () => {
 
     expect(parseBranch('hotfix/stacked/billing', config)).toMatchObject({
       kind: 'umbrella',
-      format: 'legacy',
+      alias: true,
       base: 'master',
     });
 
     expect(parseBranch('under/billing/adjust-ui', config)).toEqual({
       kind: 'child',
-      format: 'umbrella',
+      alias: false,
       umbrella: 'billing',
       name: 'adjust-ui',
       sync: null,
@@ -71,7 +73,7 @@ describe('parseBranch', () => {
 
     expect(parseBranch('stack/billing/adjust-ui', config)).toMatchObject({
       kind: 'child',
-      format: 'legacy',
+      alias: true,
       umbrella: 'billing',
     });
   });
@@ -134,18 +136,53 @@ describe('naming helpers', () => {
     'under/other/sync-7',
   ];
 
-  test('formats new branches in the umbrella format by default', () => {
-    expect(formatChildBranch({ umbrella: 'x', name: 'y' })).toBe('under/x/y');
-    expect(
-      formatChildBranch({ umbrella: 'x', name: 'y', format: 'legacy' }),
-    ).toBe('stack/x/y');
-    expect(formatSyncBranch({ umbrella: 'x', index: 1 })).toBe('under/x/sync');
-    expect(formatSyncBranch({ umbrella: 'x', index: 4 })).toBe(
+  test('formats new branches with the configured branch names', () => {
+    expect(formatChildBranch({ umbrella: 'x', name: 'y' }, config)).toBe(
+      'under/x/y',
+    );
+    expect(formatUmbrellaBranch({ type: 'bug', name: 'x' }, config)).toBe(
+      'bug/umbrella/x',
+    );
+    expect(formatSyncBranch({ umbrella: 'x', index: 1 }, config)).toBe(
+      'under/x/sync',
+    );
+    expect(formatSyncBranch({ umbrella: 'x', index: 4 }, config)).toBe(
       'under/x/sync-4',
     );
   });
 
-  test('next sync index uses the numeric syncs of both formats', () => {
+  test('uses custom branch names for creating and parsing', () => {
+    const custom = resolveConfig({
+      types: { feature: 'beta' },
+      branchNames: { umbrella: 'stacked', child: 'stack' },
+    });
+
+    if (!custom.ok) throw new Error(custom.error.message);
+
+    expect(
+      formatUmbrellaBranch({ type: 'feature', name: 'x' }, custom.value),
+    ).toBe('feature/stacked/x');
+    expect(
+      getNextSyncBranchName({
+        umbrella: 'x',
+        existingBranches: ['stack/x/sync', 'under/x/sync-5'],
+        config: custom.value,
+      }),
+    ).toBe('stack/x/sync-2');
+    expect(parseBranch('stack/x/sync-2', custom.value)).toMatchObject({
+      kind: 'child',
+      alias: false,
+      sync: { index: 2 },
+    });
+    expect(parseBranch('feature/stacked/x', custom.value)).toMatchObject({
+      kind: 'umbrella',
+      alias: false,
+    });
+    expect(parseBranch('under/x/y', custom.value)).toBeNull();
+    expect(parseBranch('feature/umbrella/x', custom.value)).toBeNull();
+  });
+
+  test('next sync index uses the numeric syncs, including aliases', () => {
     expect(
       getNextSyncBranchName({
         umbrella: 'billing',
@@ -163,7 +200,7 @@ describe('naming helpers', () => {
     ).toBe('under/new/sync');
   });
 
-  test('lists children of both formats', () => {
+  test('lists children, including aliases', () => {
     expect(
       getChildrenOf('billing', branches, config).map((child) => child.fullName),
     ).toEqual([
@@ -175,7 +212,7 @@ describe('naming helpers', () => {
     ]);
   });
 
-  test('finds the umbrella across formats, preferring the new one', () => {
+  test('finds the umbrella with aliases, preferring the branch names', () => {
     expect(findUmbrellaBranch('billing', branches, config)?.fullName).toBe(
       'feature/stacked/billing',
     );
@@ -188,7 +225,7 @@ describe('naming helpers', () => {
     ).toBe('feature/umbrella/billing');
   });
 
-  test('validates child names across formats', () => {
+  test('validates child names including aliases', () => {
     expect(
       validateChildName({
         umbrella: 'billing',
@@ -226,7 +263,7 @@ describe('naming helpers', () => {
     ).toMatchObject({ ok: false, error: { code: 'empty-name' } });
   });
 
-  test('validates umbrella names across formats and types', () => {
+  test('validates umbrella names including aliases and types', () => {
     expect(
       validateUmbrellaName({
         name: 'billing',
@@ -301,7 +338,7 @@ describe('PR helpers', () => {
     expect(bodyLinksPr('- #70', 7)).toBe(false);
   });
 
-  test('finds the parent PR in any format with a did you mean', () => {
+  test('finds the parent PR including aliases with a did you mean', () => {
     const child = parseBranch('under/biling/x', config);
 
     if (child?.kind !== 'child') throw new Error('expected a child');
@@ -527,9 +564,39 @@ describe('misc', () => {
   test('validates config files', () => {
     expect(parseConfig({ types: { feature: 'beta' } }).ok).toBe(true);
     expect(parseConfig({ types: {} })).toMatchObject({ ok: false });
-    expect(parseConfig({ types: { stack: 'beta' } })).toMatchObject({
+    expect(parseConfig({ types: { under: 'beta' } })).toMatchObject({
       ok: false,
     });
+    expect(
+      parseConfig({
+        types: { stack: 'beta' },
+        aliases: [{ umbrella: 'stacked', child: 'stack' }],
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseConfig({
+        types: { feature: 'beta' },
+        branchNames: { umbrella: 'stacked', child: 'stack' },
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: { branchNames: { umbrella: 'stacked', child: 'stack' } },
+    });
+    expect(
+      parseConfig({
+        types: { feature: 'beta' },
+        branchNames: { child: 'a/b' },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseConfig({
+        types: { feature: 'beta' },
+        branchNames: { umbrella: '' },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      parseConfig({ types: { feature: 'beta' }, aliases: [{ child: 'x' }] }),
+    ).toMatchObject({ ok: false });
     expect(
       parseConfig({ types: { feature: 'beta' }, defaultType: 'bug' }),
     ).toMatchObject({

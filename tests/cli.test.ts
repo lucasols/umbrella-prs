@@ -195,7 +195,7 @@ describe('cli', () => {
     const child = await cli(['parse', 'stack/billing/sync-2', '--json']);
 
     expect(parseJson(child.stdout)).toMatchObject({
-      branch: { kind: 'child', format: 'legacy', sync: { index: 2 } },
+      branch: { kind: 'child', alias: true, sync: { index: 2 } },
     });
   });
 

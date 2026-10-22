@@ -23,7 +23,6 @@ import {
   parseBranch,
   validateChildName,
   validateUmbrellaName,
-  type BranchFormat,
   type ParsedBranch,
   type ParsedChild,
   type ParsedUmbrella,
@@ -446,14 +445,12 @@ export function createUmbrellaPrs({
   async function createUmbrella({
     type: typeOption,
     name,
-    format = 'umbrella',
     openPr: shouldOpenPr = true,
     draft = false,
     on,
   }: {
     type?: string;
     name: string;
-    format?: BranchFormat;
     openPr?: boolean;
     draft?: boolean;
     /**
@@ -532,11 +529,10 @@ export function createUmbrellaPrs({
         dependsOn = { branch: on, pr: dependency.number };
       }
 
-      const fullName = formatUmbrellaBranch({
-        type,
-        name: validName.value,
-        format,
-      });
+      const fullName = formatUmbrellaBranch(
+        { type, name: validName.value },
+        config,
+      );
 
       const startBranch = dependsOn?.branch ?? base;
 
@@ -549,7 +545,7 @@ export function createUmbrellaPrs({
 
       const branch: ParsedUmbrella = {
         kind: 'umbrella',
-        format,
+        alias: false,
         type,
         base,
         name: validName.value,
@@ -624,10 +620,10 @@ export function createUmbrellaPrs({
         await git.checkoutUpdated(umbrella.value.fullName);
       }
 
-      const fullName = formatChildBranch({
-        umbrella: umbrella.value.name,
-        name: validName.value,
-      });
+      const fullName = formatChildBranch(
+        { umbrella: umbrella.value.name, name: validName.value },
+        config,
+      );
 
       log(`Creating ${fullName}`);
 
@@ -712,6 +708,7 @@ export function createUmbrellaPrs({
             umbrella.value.name,
             source,
             existingBranches,
+            config,
           );
 
       if (currentBase.dependsOn && source !== currentBase.dependsOn.branch) {
@@ -1259,8 +1256,12 @@ export function createUmbrellaPrs({
     childDiff,
     verify,
     autoApprove,
-    /** Pure helper bound to this config */
+    /** Pure helpers bound to this config */
     parseBranch: (branch: string) => parseBranch(branch, config),
+    formatUmbrellaBranch: (branch: { type: string; name: string }) =>
+      formatUmbrellaBranch(branch, config),
+    formatChildBranch: (branch: { umbrella: string; name: string }) =>
+      formatChildBranch(branch, config),
     buildTree: <T extends PrInfo>(prs: readonly T[]) => buildTree(prs, config),
   };
 }
@@ -1269,6 +1270,7 @@ function getLabeledSyncBranchName(
   umbrella: string,
   source: string,
   existingBranches: ParsedBranch[],
+  config: ResolvedConfig,
 ): string {
   const label = normalizeBranchSegment(source.replaceAll('/', '-'));
   const existing = new Set(
@@ -1285,5 +1287,5 @@ function getLabeledSyncBranchName(
     name = `sync-${label}-${attempt}`;
   }
 
-  return formatChildBranch({ umbrella, name });
+  return formatChildBranch({ umbrella, name }, config);
 }

@@ -1,6 +1,10 @@
-import type { ResolvedConfig } from './config';
 import type { PrInfo } from './github';
-import { parseBranch, type ParsedChild, type ParsedUmbrella } from './naming';
+import {
+  parseBranch,
+  type NamingConfig,
+  type ParsedChild,
+  type ParsedUmbrella,
+} from './naming';
 
 export type UmbrellaTreeNode<T> = {
   branch: ParsedUmbrella;
@@ -24,7 +28,7 @@ export type UmbrellaTree<T> = {
 /** Groups PRs into umbrella -> children trees, keeping the PR order */
 export function buildTree<T extends PrInfo>(
   prs: readonly T[],
-  config: Pick<ResolvedConfig, 'types'>,
+  config: NamingConfig,
 ): UmbrellaTree<T> {
   const umbrellas: UmbrellaTreeNode<T>[] = [];
   const umbrellasByName = new Map<string, UmbrellaTreeNode<T>>();
@@ -56,8 +60,8 @@ export function buildTree<T extends PrInfo>(
 
       const existing = umbrellasByName.get(branch.name);
 
-      // the new format wins when both exist
-      if (!existing || existing.branch.format === 'legacy') {
+      // the configured branch names win over aliases
+      if (!existing || (existing.branch.alias && !branch.alias)) {
         umbrellasByName.set(branch.name, node);
       }
     } else {

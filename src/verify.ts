@@ -149,7 +149,7 @@ export async function verifyPr(
       addError(
         'child-base-mismatch',
         `Child branch "${head}" belongs to umbrella "${parsedHead.umbrella}", but it targets umbrella "${parsedBase.name}" (${base})`,
-        `${editBaseFix}, or create the branch as ${formatChildBranch({ umbrella: parsedBase.name, name: parsedHead.name })}`,
+        `${editBaseFix}, or create the branch as ${formatChildBranch({ umbrella: parsedBase.name, name: parsedHead.name }, config)}`,
       );
     } else {
       const parentPr = findParentPr(parsedHead, await getOpenPrs(), config);

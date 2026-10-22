@@ -289,7 +289,6 @@ type CommandOutput = {
 };
 
 async function createUmbrellaCmd(ctx: CommandContext): Promise<CommandOutput> {
-  const format = getChoice(ctx, 'format', ['umbrella', 'legacy'] as const);
   const name = await requireValue(ctx, ctx.positionals[0], {
     flag: '<name>',
     prompt: () =>
@@ -302,7 +301,6 @@ async function createUmbrellaCmd(ctx: CommandContext): Promise<CommandOutput> {
     await ctx.umbrella().createUmbrella({
       name,
       type: await promptType(ctx),
-      format,
       openPr: !getBoolean(ctx, 'no-pr'),
       draft: getBoolean(ctx, 'draft'),
       on: getString(ctx, 'on'),
@@ -384,17 +382,22 @@ async function createCmd(ctx: CommandContext): Promise<CommandOutput> {
     );
   }
 
+  const { branchNames } = ctx.umbrella().config;
   const kind = await ctx.prompter.select('What do you want to create?', [
-    { value: 'child', label: 'Child branch', hint: 'under/<umbrella>/<name>' },
+    {
+      value: 'child',
+      label: 'Child branch',
+      hint: `${branchNames.child}/<umbrella>/<name>`,
+    },
     {
       value: 'sync',
       label: 'Sync with base',
-      hint: 'under/<umbrella>/sync-N',
+      hint: `${branchNames.child}/<umbrella>/sync-N`,
     },
     {
       value: 'umbrella',
       label: 'Umbrella branch',
-      hint: '<type>/umbrella/<name>',
+      hint: `<type>/${branchNames.umbrella}/<name>`,
     },
   ]);
 
@@ -1045,7 +1048,6 @@ export const commands: CommandDef[] = [
         type: 'string',
         description: 'Branch type from the config, defaults to `defaultType`',
       },
-      format: { type: 'string', description: 'umbrella (default) or legacy' },
       on: {
         type: 'string',
         description:
@@ -1336,6 +1338,8 @@ function formatHelp(command: CommandDef | null): string {
       '',
       'Global options:',
       ...formatOptions(globalOptions),
+      '',
+      'Branch names use the default `umbrella` and `under` identifiers, set `branchNames` in the config to change them',
       '',
       `Exit codes: ${EXIT.ok} ok, ${EXIT.failed} failed, ${EXIT.usage} usage error, ${EXIT.conflicts} merge conflicts left in progress, ${EXIT.config} config error, ${EXIT.precondition} precondition failed (dirty tree, not found)`,
     ];

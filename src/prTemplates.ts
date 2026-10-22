@@ -1,9 +1,9 @@
-import type { ResolvedConfig } from './config';
 import type { PrInfo } from './github';
 import {
   formatChildBranch,
   inferTitleFromName,
   parseBranch,
+  type NamingConfig,
   type ParsedChild,
 } from './naming';
 import { err, ok, type Result } from './result';
@@ -166,13 +166,16 @@ export type FindParentPrError = {
   fix: string;
 };
 
-/** Finds the open PR of the child's umbrella in any format */
+/**
+ * Finds the open PR of the child's umbrella, preferring the configured
+ * `branchNames` over aliases
+ */
 export function findParentPr<T extends PrInfo>(
   child: ParsedChild,
   openPrs: readonly T[],
-  config: Pick<ResolvedConfig, 'types'>,
+  config: NamingConfig,
 ): Result<T, FindParentPrError> {
-  const umbrellaPrs: { pr: T; name: string; legacy: boolean }[] = [];
+  const umbrellaPrs: { pr: T; name: string; alias: boolean }[] = [];
 
   for (const pr of openPrs) {
     const parsed = parseBranch(pr.headRefName, config);
@@ -181,14 +184,14 @@ export function findParentPr<T extends PrInfo>(
       umbrellaPrs.push({
         pr,
         name: parsed.name,
-        legacy: parsed.format === 'legacy',
+        alias: parsed.alias,
       });
     }
   }
 
   const matches = umbrellaPrs
     .filter((item) => item.name === child.umbrella)
-    .sort((a, b) => Number(a.legacy) - Number(b.legacy));
+    .sort((a, b) => Number(a.alias) - Number(b.alias));
 
   const match = matches[0];
 
@@ -201,11 +204,7 @@ export function findParentPr<T extends PrInfo>(
 
   const suggestion =
     closest ?
-      formatChildBranch({
-        umbrella: closest,
-        name: child.name,
-        format: child.format,
-      })
+      formatChildBranch({ umbrella: closest, name: child.name }, config)
     : null;
 
   return err({

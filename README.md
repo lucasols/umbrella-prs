@@ -11,14 +11,14 @@ Needs `git` (>= 2.38 locally, >= 2.40 in CI) and an authenticated [`gh`](https:/
 
 ## Branch names
 
-| branch           | format                   | legacy format (still parsed) |
-| ---------------- | ------------------------ | ---------------------------- |
-| umbrella         | `<type>/umbrella/<name>` | `<type>/stacked/<name>`      |
-| child            | `under/<name>/<child>`   | `stack/<name>/<child>`       |
-| base sync        | `under/<name>/sync[-N]`  | `stack/<name>/sync[-N]`      |
-| sync of a branch | `under/<name>/sync-<label>` | `stack/<name>/sync-<label>` |
+| branch           | default name                | with `branchNames: { umbrella: 'stacked', child: 'stack' }` |
+| ---------------- | --------------------------- | ----------------------------------------------------------- |
+| umbrella         | `<type>/umbrella/<name>`    | `<type>/stacked/<name>`                                     |
+| child            | `under/<name>/<child>`      | `stack/<name>/<child>`                                      |
+| base sync        | `under/<name>/sync[-N]`     | `stack/<name>/sync[-N]`                                     |
+| sync of a branch | `under/<name>/sync-<label>` | `stack/<name>/sync-<label>`                                 |
 
-New branches always use the new format. Lookups work across formats, so a legacy umbrella can have new-format children. Base syncs (`sync`, `sync-N`) can be auto-approved, `sync-<label>` syncs can't.
+New branches always use `branchNames`. Branches that use one of the `aliases` (e.g. an old naming) are parsed but never created, and lookups work across both, so an alias umbrella can have children with the configured names. Base syncs (`sync`, `sync-N`) can be auto-approved, `sync-<label>` syncs can't.
 
 ## Config
 
@@ -27,17 +27,22 @@ New branches always use the new format. Lookups work across formats, so a legacy
 ```json
 {
   "types": { "feature": "beta", "bug": "beta", "hotfix": "master" },
+  "branchNames": { "umbrella": "umbrella", "child": "under" },
+  "aliases": [{ "umbrella": "stacked", "child": "stack" }],
   "defaultType": "feature",
   "remote": "origin",
   "repo": "acme/app",
   "autoApprove": { "users": ["lucasols"], "syncBranches": true },
   "diff": { "exclude": ["pnpm-lock.yaml"] },
   "docsLink": "https://github.com/acme/app#branches",
-  "syncDiff": { "maxCommentChars": 60000, "commentMarker": "UMBRELLA_SYNC_DIFF" }
+  "syncDiff": {
+    "maxCommentChars": 60000,
+    "commentMarker": "UMBRELLA_SYNC_DIFF"
+  }
 }
 ```
 
-`types` maps each branch type to its base branch. Everything else is optional.
+`types` maps each branch type to its base branch. Everything else is optional. `branchNames` and `aliases` must be single branch segments that don't collide with the types.
 
 ## CLI
 
@@ -53,7 +58,7 @@ umbrella-prs tree
 umbrella-prs diff sync --out sync.diff                    # conflict resolutions of a sync branch
 umbrella-prs diff child --exclude '**/pt.json' --ignore-imports --out pr.diff
 umbrella-prs pr create
-umbrella-prs parse feature/stacked/plans --json
+umbrella-prs parse feature/umbrella/plans --json
 umbrella-prs find-umbrella plans --json
 ```
 
@@ -101,7 +106,11 @@ When the PR merged more than one branch, each merge commit gets its own section.
 ## Library
 
 ```ts
-import { createUmbrellaPrs, parseBranch, buildTree } from '@ls-stack/umbrella-prs';
+import {
+  createUmbrellaPrs,
+  parseBranch,
+  buildTree,
+} from '@ls-stack/umbrella-prs';
 
 const umbrella = createUmbrellaPrs({
   config: { types: { feature: 'beta', hotfix: 'master' } },
@@ -114,14 +123,15 @@ const umbrella = createUmbrellaPrs({
 
 const result = await umbrella.createSync({ umbrella: 'billing' });
 
-if (!result.ok) throw new Error(`${result.error.message}\n${result.error.fix ?? ''}`);
+if (!result.ok)
+  throw new Error(`${result.error.message}\n${result.error.fix ?? ''}`);
 ```
 
 Operations return `{ ok: true, value } | { ok: false, error: { code, message, fix? } }` and never prompt or exit the process.
 
 Pure helpers:
 
-- Naming: `parseBranch`, `parseBranchStrict`, `formatUmbrellaBranch`, `formatChildBranch`, `getNextSyncBranchName`, `validateChildName`, `findUmbrellaBranch` and `getChildrenOf`.
+- Naming: `parseBranch`, `parseBranchStrict`, `formatUmbrellaBranch`, `formatChildBranch`, `getNextSyncBranchName`, `validateChildName`, `findUmbrellaBranch` and `getChildrenOf`. They take the resolved config (`resolveConfig(config)`) for the types and branch names. `createUmbrellaPrs` also returns `parseBranch`, `formatUmbrellaBranch`, `formatChildBranch` and `buildTree` bound to its config.
 - Trees and dependencies: `buildTree(prs, config)` and `getDependencyChain`.
 - PR bodies: `addChildToUmbrellaBody`, `addParentLinkToChildBody` and `findParentPr`.
 - Other: `getAutoApproveEligibility`, `renderSyncDiffComment` and `removeImportOnlyChanges`.

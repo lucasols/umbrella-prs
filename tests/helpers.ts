@@ -14,6 +14,7 @@ const commentEndpointRegex = /issues\/comments\/(\d+)$/;
 
 export const testConfig: UmbrellaConfig = {
   types: { feature: 'beta', 'prod-feature': 'master' },
+  aliases: [{ umbrella: 'stacked', child: 'stack' }],
   repo: 'acme/app',
   autoApprove: { users: ['lucasols'] },
   diff: { exclude: ['pnpm-lock.yaml'] },

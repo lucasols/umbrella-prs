@@ -7,12 +7,26 @@ import {
   isStringArray,
 } from './utils.typeGuards';
 
+export type BranchNames = {
+  /** Middle segment of umbrella branches: `<type>/<umbrella>/<name>` */
+  umbrella: string;
+  /** Prefix of child branches: `<child>/<umbrella-name>/<name>` */
+  child: string;
+};
+
 export type UmbrellaConfig = {
   /**
    * Branch type -> base branch, e.g. `{ feature: 'beta', hotfix: 'master' }`.
    * Umbrella branches are `<type>/umbrella/<name>`
    */
   types: Record<string, string>;
+  /**
+   * Identifiers of the branches the lib creates and parses, defaults to
+   * `{ umbrella: 'umbrella', child: 'under' }`
+   */
+  branchNames?: Partial<BranchNames>;
+  /** Other identifiers that are parsed but never created, e.g. an old naming */
+  aliases?: BranchNames[];
   /** Type used when none is given, defaults to the first key of `types` */
   defaultType?: string;
   /** Defaults to `origin` */
@@ -41,6 +55,8 @@ export type UmbrellaConfig = {
 
 export type ResolvedConfig = {
   types: Record<string, string>;
+  branchNames: BranchNames;
+  aliases: BranchNames[];
   defaultType: string;
   remote: string;
   repo: string | undefined;
@@ -53,7 +69,12 @@ export type ResolvedConfig = {
 export type ConfigError = { code: 'invalid-config'; message: string };
 
 const typeRegex = /^[a-z0-9][a-z0-9-]*$/;
-const reservedTypes = new Set(['stack', 'under', 'stacked', 'umbrella']);
+const branchNameRegex = /^[a-z0-9][\w.-]*$/i;
+
+export const defaultBranchNames: BranchNames = {
+  umbrella: 'umbrella',
+  child: 'under',
+};
 
 export function resolveConfig(
   config: UmbrellaConfig,
@@ -64,6 +85,27 @@ export function resolveConfig(
     return configError('`types` must have at least one branch type');
   }
 
+  const branchNames: BranchNames = {
+    umbrella: config.branchNames?.umbrella ?? defaultBranchNames.umbrella,
+    child: config.branchNames?.child ?? defaultBranchNames.child,
+  };
+  const aliases = config.aliases ?? [];
+  const identifiers = new Map<string, string>();
+
+  for (const [index, names] of [branchNames, ...aliases].entries()) {
+    const key = index === 0 ? 'branchNames' : `aliases[${index - 1}]`;
+
+    for (const [field, value] of Object.entries(names)) {
+      if (!branchNameRegex.test(value)) {
+        return configError(
+          `Invalid \`${key}.${field}\` "${value}", use a single branch segment without "/"`,
+        );
+      }
+
+      identifiers.set(value, `\`${key}.${field}\``);
+    }
+  }
+
   for (const [type, base] of Object.entries(config.types)) {
     if (!typeRegex.test(type)) {
       return configError(
@@ -71,8 +113,12 @@ export function resolveConfig(
       );
     }
 
-    if (reservedTypes.has(type)) {
-      return configError(`Branch type "${type}" is reserved`);
+    const collision = identifiers.get(type);
+
+    if (collision !== undefined) {
+      return configError(
+        `Branch type "${type}" collides with ${collision}, rename one of them`,
+      );
     }
 
     if (!base.trim()) {
@@ -90,6 +136,8 @@ export function resolveConfig(
 
   return ok({
     types: config.types,
+    branchNames,
+    aliases,
     defaultType,
     remote: config.remote ?? 'origin',
     repo: config.repo,
@@ -152,6 +200,51 @@ export function parseConfig(
   config.remote = remote.value;
   config.repo = repo.value;
   config.docsLink = docsLink.value;
+
+  if (value.branchNames !== undefined) {
+    const { branchNames } = value;
+
+    if (!isRecord(branchNames)) {
+      return configError('`branchNames` must be an object');
+    }
+
+    const umbrella = getOptional(branchNames, 'umbrella', isString);
+    const child = getOptional(branchNames, 'child', isString);
+
+    if (!umbrella.ok || !child.ok) {
+      return configError(
+        '`branchNames.umbrella` and `branchNames.child` must be strings',
+      );
+    }
+
+    config.branchNames = { umbrella: umbrella.value, child: child.value };
+  }
+
+  if (value.aliases !== undefined) {
+    const { aliases } = value;
+
+    if (!Array.isArray(aliases)) {
+      return configError('`aliases` must be an array');
+    }
+
+    const parsedAliases: BranchNames[] = [];
+
+    for (const alias of aliases) {
+      if (
+        !isRecord(alias) ||
+        !isString(alias.umbrella) ||
+        !isString(alias.child)
+      ) {
+        return configError(
+          'Each of `aliases` must be `{ "umbrella": string, "child": string }`',
+        );
+      }
+
+      parsedAliases.push({ umbrella: alias.umbrella, child: alias.child });
+    }
+
+    config.aliases = parsedAliases;
+  }
 
   if (value.autoApprove !== undefined) {
     const { autoApprove } = value;

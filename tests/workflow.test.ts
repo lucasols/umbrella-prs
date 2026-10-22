@@ -3,6 +3,7 @@ import {
   createTestRepo,
   createTestUmbrella,
   lines,
+  testConfig,
   type TestRepo,
 } from './helpers';
 
@@ -63,7 +64,31 @@ describe('createUmbrella', () => {
     expect(repo.prs[0]?.body).toContain('## Children PRs');
   });
 
-  test('fails when the umbrella already exists in another format', async () => {
+  test('creates umbrella, child and sync branches with custom branch names', async () => {
+    const u = createTestUmbrella(repo, {
+      ...testConfig,
+      aliases: [],
+      branchNames: { umbrella: 'stacked', child: 'stack' },
+    });
+
+    const created = unwrap(await u.createUmbrella({ name: 'billing' }));
+
+    expect(created.branch.fullName).toBe('feature/stacked/billing');
+
+    const child = unwrap(await u.createChild({ name: 'adjust-ui' }));
+
+    expect(child.branch.fullName).toBe('stack/billing/adjust-ui');
+
+    repo.git('checkout', '--quiet', 'beta');
+    repo.commit('beta change', { 'beta.ts': 'beta\n' });
+    repo.git('push', '--quiet');
+
+    const sync = unwrap(await u.createSync({ umbrella: 'billing' }));
+
+    expect(sync.branch).toBe('stack/billing/sync');
+  });
+
+  test('fails when the umbrella already exists with an alias', async () => {
     repo.git('checkout', '--quiet', '-b', 'feature/stacked/billing');
     repo.git('push', '--quiet', '-u', 'origin', 'feature/stacked/billing');
 
@@ -102,7 +127,7 @@ describe('createUmbrella', () => {
 });
 
 describe('children', () => {
-  test('creates children from the umbrella in the new format, also for legacy umbrellas', async () => {
+  test('creates children with the configured names, also for alias umbrellas', async () => {
     repo.git('checkout', '--quiet', '-b', 'feature/stacked/legacy');
     repo.commit('Create stacked PR');
     repo.git('push', '--quiet', '-u', 'origin', 'feature/stacked/legacy');
