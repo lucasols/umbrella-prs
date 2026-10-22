@@ -1,0 +1,51 @@
+{
+  "name": "@ls-stack/umbrella-prs",
+  "version": "0.0.0",
+  "description": "Umbrella PR branch workflow: a long-lived umbrella branch with child PRs targeting it, as a library and CLI",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "lint": "pnpm tsc && pnpm eslint && pnpm format",
+    "tsc": "tsc -p tsconfig.json",
+    "tsc:watch": "tsc -p tsconfig.json --watch",
+    "format": "prettier src/ tests/ --write --list-different",
+    "test": "vitest run",
+    "test:ui": "vitest --ui",
+    "eslint": "CI=true eslint src/ tests/ --color --max-warnings=0",
+    "build": "pnpm test && pnpm lint && pnpm run build:no-test",
+    "build:no-test": "tsdown",
+    "pre-publish": "pnpm build"
+  },
+  "files": [
+    "dist"
+  ],
+  "repository": "github:lucasols/umbrella-prs",
+  "author": "Lucas Santos",
+  "bin": {
+    "umbrella-prs": "./dist/cli.js"
+  },
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "import": "./dist/main.js",
+      "default": "./dist/main.js"
+    }
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "@ls-stack/eslint-cfg": "^0.10.0",
+    "@ls-stack/extended-lint": "^0.90.3",
+    "@types/node": "^26.6.5",
+    "@vitest/ui": "^5.0.5",
+    "eslint": "^10.13.0",
+    "prettier": "3.9.10",
+    "tsdown": "^0.23.1",
+    "typescript": "6.0.3",
+    "vitest": "^5.0.5"
+  }
+}
