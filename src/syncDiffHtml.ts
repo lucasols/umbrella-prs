@@ -218,7 +218,15 @@ function renderViewerHtml({
     '</div>',
     '</header>',
     '<div class="layout">',
-    '<aside id="files"></aside>',
+    '<aside id="files">',
+    '<div class="search" title="Space separated terms: text, a glob like *.ts or src/**/*.ts, or a /regex/">',
+    '<input type="search" id="search" placeholder="Filter: text, *.ts, /regex/" aria-label="Filter files" autocomplete="off" spellcheck="false">',
+    '<input type="search" id="exclude" placeholder="Exclude: text, *.test.ts, /regex/" aria-label="Exclude files" autocomplete="off" spellcheck="false">',
+    '<div id="search-actions" class="search-actions hidden"><span id="match-count" class="muted"></span><button type="button" id="mark-matches"></button></div>',
+    '</div>',
+    '<div id="tree"></div>',
+    '</aside>',
+    '<div id="resizer" class="resizer" title="Drag to resize, double-click to reset"></div>',
     '<main id="review"></main>',
     '</div>',
     `<script type="application/json" id="sync-diff-data">${serializeJson(data)}</script>`,
@@ -315,12 +323,38 @@ input[type='checkbox'] { accent-color: var(--accent); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .layout { flex: 1; display: flex; min-height: 0; }
 #files {
-  width: 300px;
+  display: flex;
+  flex-direction: column;
+  width: var(--sidebar-width, 300px);
+  max-width: 70vw;
   flex-shrink: 0;
-  overflow: auto;
-  padding: 8px 0;
   border-right: 1px solid var(--border-opaque);
 }
+.search { display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 4px; }
+.search input {
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border-opaque);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+.search input:focus { outline: none; border-color: var(--accent); }
+.search input.invalid { border-color: var(--deletion); }
+.search-actions { display: flex; gap: 8px; align-items: center; justify-content: space-between; font-size: 12px; }
+.search-actions button { padding: 0 8px; }
+#tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0 8px; }
+.resizer {
+  position: relative;
+  z-index: 1;
+  width: 7px;
+  margin: 0 -4px 0 -3px;
+  flex-shrink: 0;
+  cursor: col-resize;
+}
+.resizer:hover, .resizer.dragging { background: color-mix(in srgb, var(--accent) 50%, transparent); }
+body.resizing { cursor: col-resize; user-select: none; }
 #review { flex: 1; min-width: 0; height: 100%; overflow: auto; }
 .section-title {
   padding: 8px 12px 4px;
@@ -359,6 +393,19 @@ input[type='checkbox'] { accent-color: var(--accent); }
   font-size: 11px;
 }
 .caret:hover { background: none; }
+/* the checkbox takes the full row height and part of the gaps around it */
+.row .hit {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 1px 5px;
+  margin: -1px -5px;
+  cursor: pointer;
+}
+.row .hit input { margin: 0; cursor: pointer; }
+.children.collapsed { display: none; }
+/* collapsed folders open while searching so the matches show */
+#tree.searching .children.collapsed { display: block; }
 .hidden { display: none !important; }
 .views { display: inline-flex; border: 1px solid var(--border-opaque); border-radius: 6px; overflow: hidden; }
 .views a { padding: 2px 10px; color: var(--muted); text-decoration: none; }
@@ -393,6 +440,7 @@ body.single .shortcut { display: inline-block; }
 @media (max-width: 720px) {
   .layout { flex-direction: column; }
   #files { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--border-opaque); }
+  .resizer { display: none; }
 }
 `;
 
@@ -415,6 +463,7 @@ const modeKey = 'umbrella-prs:sync-diff-mode';
 const currentKey = data.storage.current;
 const importsKey = 'umbrella-prs:sync-diff-hide-imports';
 const wrapKey = 'umbrella-prs:sync-diff-wrap';
+const sidebarWidthKey = 'umbrella-prs:sync-diff-sidebar-width';
 const themeKey = 'umbrella-prs:sync-diff-theme';
 
 function readStorage(key, fallback) {
@@ -554,6 +603,105 @@ function isVisible(entry) {
   return !(hideImportOnly && entry.importOnly);
 }
 
+const regexTermRegex = /^\/(.+)\/([a-z]*)$/;
+const globCharsRegex = /[*?[\]{}]/;
+
+// a glob as a regex: ** matches across folders, * and ? within a name
+function globToRegex(glob) {
+  let source = '';
+  let braces = 0;
+
+  for (let index = 0; index < glob.length; index++) {
+    const char = glob[index];
+
+    if (char === '*' && glob[index + 1] === '*') {
+      index++;
+      // **/ also matches no folder
+      if (glob[index + 1] === '/') {
+        index++;
+        source += '(?:.*/)?';
+      } else {
+        source += '.*';
+      }
+    } else if (char === '*') {
+      source += '[^/]*';
+    } else if (char === '?') {
+      source += '[^/]';
+    } else if (char === '{') {
+      braces++;
+      source += '(?:';
+    } else if (char === '}' && braces > 0) {
+      braces--;
+      source += ')';
+    } else if (char === ',' && braces > 0) {
+      source += '|';
+    } else if (char === '[' && glob.indexOf(']', index + 2) !== -1) {
+      const end = glob.indexOf(']', index + 2);
+      source += '[' + glob.slice(index + 1, end).replace(/^!/, '^').replaceAll('\\', '\\\\') + ']';
+      index = end;
+    } else {
+      source += char.replace(/[.+^$()|[\]{}\\]/g, '\\$&');
+    }
+  }
+
+  return new RegExp('^' + source + '$', 'i');
+}
+
+// a term of the search: a /regex/, a glob when it has *, ?, [] or {}, or text
+// in the path, all ignoring the case. Throws when the regex is invalid
+function parseTerm(term) {
+  const regexMatch = regexTermRegex.exec(term);
+
+  if (regexMatch) {
+    // g and y make test() stateful
+    const regex = new RegExp(regexMatch[1], 'i' + regexMatch[2].replace(/[giy]/g, ''));
+    return (path) => regex.test(path);
+  }
+
+  if (globCharsRegex.test(term)) {
+    const regex = globToRegex(term);
+    // without a slash it matches the file name in any folder, like in .gitignore
+    return term.includes('/') ? (path) => regex.test(path) : (path) => regex.test(path.slice(path.lastIndexOf('/') + 1));
+  }
+
+  const text = term.toLowerCase();
+  return (path) => path.toLowerCase().includes(text);
+}
+
+// the terms of an input, invalid ones are skipped and flag the input
+function parseSearchInput(input) {
+  let invalid = false;
+  const matchers = input.value.split(/\s+/).filter(Boolean).flatMap((term) => {
+    try {
+      return [parseTerm(term)];
+    } catch {
+      invalid = true;
+      return [];
+    }
+  });
+
+  input.classList.toggle('invalid', invalid);
+  return matchers;
+}
+
+// files must match all the filter terms and none of the exclude terms
+let includeMatchers = [];
+let excludeMatchers = [];
+
+function isSearching() {
+  return includeMatchers.length > 0 || excludeMatchers.length > 0;
+}
+
+function matchesSearch(entry) {
+  const name = entry.fileDiff.name;
+  return includeMatchers.every((matches) => matches(name)) && !excludeMatchers.some((matches) => matches(name));
+}
+
+// files shown in the tree, the folder checkboxes only act on these
+function inTree(entry) {
+  return isVisible(entry) && matchesSearch(entry);
+}
+
 function visibleEntries() {
   return treeOrder.filter(isVisible);
 }
@@ -598,7 +746,7 @@ function setViewed(targets, value) {
   }
 
   updateProgress();
-  updateFolders();
+  updateTree();
 }
 
 // unmarks the last files marked as viewed that still are, and goes back to them
@@ -627,6 +775,7 @@ function setCurrent(entry) {
   current?.row?.classList.remove('current');
   current = entry;
   current?.row?.classList.add('current');
+  current?.row?.scrollIntoView({ block: 'nearest' });
   writeStorage(currentKey, entry?.fileDiff.name ?? null);
 }
 
@@ -658,20 +807,43 @@ function move(offset) {
 }
 
 const folders = [];
+// section titles, hidden while searching when no file of the section matches
+const sectionHeaders = [];
 // files in the order of the tree, so the diffs follow it
 const treeOrder = [];
+const tree = document.getElementById('tree');
+const noMatches = el('div', { className: 'empty hidden', textContent: 'No matching files' });
+const searchActions = document.getElementById('search-actions');
+const matchCount = document.getElementById('match-count');
+const markMatchesButton = document.getElementById('mark-matches');
 
 // folder checkboxes are checked when all files are viewed, mixed when some are
-function updateFolders() {
+function updateTree() {
+  const searching = isSearching();
+  tree.classList.toggle('searching', searching);
+
+  for (const entry of entries) entry.row?.classList.toggle('hidden', !inTree(entry));
+
   for (const folder of folders) {
-    const visible = folder.entries.filter(isVisible);
-    const count = visible.filter(isViewed).length;
-    folder.toggle.checked = visible.length > 0 && count === visible.length;
-    folder.toggle.indeterminate = count > 0 && count < visible.length;
+    const shown = folder.entries.filter(inTree);
+    const count = shown.filter(isViewed).length;
+    folder.toggle.checked = shown.length > 0 && count === shown.length;
+    folder.toggle.indeterminate = count > 0 && count < shown.length;
     folder.row.classList.toggle('viewed', folder.toggle.checked);
-    folder.row.classList.toggle('hidden', visible.length === 0);
-    folder.children.classList.toggle('filtered', visible.length === 0);
+    folder.row.classList.toggle('hidden', shown.length === 0);
   }
+
+  for (const header of sectionHeaders) {
+    const hidden = searching && !header.entries.some(inTree);
+    for (const node of header.nodes) node.classList.toggle('hidden', hidden);
+  }
+
+  const matches = entries.filter(inTree);
+  const viewedCount = matches.filter(isViewed).length;
+  noMatches.classList.toggle('hidden', !searching || matches.length > 0);
+  searchActions.classList.toggle('hidden', !searching || matches.length === 0);
+  matchCount.textContent = matches.length + (matches.length === 1 ? ' file, ' : ' files, ') + viewedCount + ' viewed';
+  markMatchesButton.textContent = viewedCount === matches.length ? 'Unmark all' : 'Mark all as viewed';
 }
 
 function buildTree(sectionEntries) {
@@ -729,7 +901,7 @@ function renderTree(node, depth) {
     const children = el('div', { className: 'children' }, renderTree(folder, depth + 1));
     const row = el('div', { className: 'row folder' }, [
       caret,
-      toggle,
+      el('label', { className: 'hit', title: 'Mark the folder as viewed' }, [toggle]),
       el('span', { className: 'name', textContent: folder.name + '/', title: folder.name }),
     ]);
     row.style.paddingLeft = 4 + depth * 14 + 'px';
@@ -738,10 +910,10 @@ function renderTree(node, depth) {
     folders.push(record);
 
     toggle.addEventListener('change', () => {
-      setViewed(record.entries.filter(isVisible), toggle.checked);
+      setViewed(record.entries.filter(inTree), toggle.checked);
     });
     caret.addEventListener('click', () => {
-      const collapsed = children.classList.toggle('hidden');
+      const collapsed = children.classList.toggle('collapsed');
       caret.textContent = collapsed ? '▸' : '▾';
       caret.title = collapsed ? 'Expand' : 'Collapse';
     });
@@ -756,7 +928,7 @@ function renderTree(node, depth) {
     name.addEventListener('click', () => select(entry));
 
     entry.row = el('div', { className: 'row file' + (isViewed(entry) ? ' viewed' : '') }, [
-      createToggle(entry),
+      el('label', { className: 'hit', title: 'Mark as viewed' }, [createToggle(entry)]),
       name,
       ...(entry.conflicted ? [el('span', { className: 'badge', textContent: 'conflict' })] : []),
       ...(entry.importOnly ? [el('span', { className: 'badge muted', textContent: 'imports' })] : []),
@@ -769,13 +941,12 @@ function renderTree(node, depth) {
 }
 
 function renderSidebar() {
-  const aside = document.getElementById('files');
-
   for (const section of sections) {
     const sectionEntries = entries.filter((entry) => entry.section === section);
+    const nodes = [];
 
     if (multipleSections) {
-      aside.append(
+      nodes.push(
         el('div', {
           className: 'section-title',
           textContent: section.rightLabel + (section.compareTo ? ' (' + section.compareTo.slice(0, 12) + ')' : ''),
@@ -784,11 +955,14 @@ function renderSidebar() {
     }
 
     if (sectionEntries.length === 0) {
-      aside.append(el('div', { className: 'section-title', textContent: 'No changes' }));
+      nodes.push(el('div', { className: 'section-title', textContent: 'No changes' }));
     }
 
-    aside.append(...renderTree(buildTree(sectionEntries), 0));
+    sectionHeaders.push({ nodes, entries: sectionEntries });
+    tree.append(...nodes, ...renderTree(buildTree(sectionEntries), 0));
   }
+
+  tree.append(noMatches);
 }
 
 const emptyNote = el('p', { className: 'empty hidden' });
@@ -912,10 +1086,7 @@ function render() {
     setCurrent(visible.find((entry) => !isViewed(entry)) ?? visible[0] ?? null);
   }
 
-  for (const entry of entries) {
-    entry.row?.classList.toggle('hidden', !isVisible(entry));
-    entry.row?.classList.toggle('current', entry === current);
-  }
+  for (const entry of entries) entry.row?.classList.toggle('current', entry === current);
 
   const items = mode === 'single' ? (current ? [current] : []) : visible;
 
@@ -951,7 +1122,7 @@ function render() {
   wrapButton.setAttribute('aria-pressed', String(wrap));
 
   updateProgress();
-  updateFolders();
+  updateTree();
 }
 
 // page colors derived from the theme like diffshub.com does
@@ -1059,6 +1230,82 @@ importsToggle.addEventListener('change', () => {
   hideImportOnly = importsToggle.checked;
   writeStorage(importsKey, hideImportOnly);
   render();
+});
+
+const searchInput = document.getElementById('search');
+const excludeInput = document.getElementById('exclude');
+
+for (const input of [searchInput, excludeInput]) {
+  input.addEventListener('input', () => {
+    includeMatchers = parseSearchInput(searchInput);
+    excludeMatchers = parseSearchInput(excludeInput);
+    updateTree();
+    current?.row?.scrollIntoView({ block: 'nearest' });
+  });
+
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    if (input.value) {
+      input.value = '';
+      input.dispatchEvent(new Event('input'));
+    } else {
+      input.blur();
+    }
+  });
+}
+
+// marks the files that match the search, or unmarks them when all are viewed
+markMatchesButton.addEventListener('click', () => {
+  const matches = entries.filter(inTree);
+  setViewed(matches, !matches.every(isViewed));
+});
+
+const filesAside = document.getElementById('files');
+const resizer = document.getElementById('resizer');
+
+function setSidebarWidth(width) {
+  if (width === null) {
+    document.documentElement.style.removeProperty('--sidebar-width');
+    return;
+  }
+
+  const clamped = Math.round(Math.max(160, Math.min(width, window.innerWidth * 0.7)));
+  document.documentElement.style.setProperty('--sidebar-width', clamped + 'px');
+}
+
+setSidebarWidth(readStorage(sidebarWidthKey, null));
+
+resizer.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+
+  const startX = event.clientX;
+  const startWidth = filesAside.getBoundingClientRect().width;
+  resizer.setPointerCapture(event.pointerId);
+  resizer.classList.add('dragging');
+  document.body.classList.add('resizing');
+
+  function onMove(moveEvent) {
+    setSidebarWidth(startWidth + moveEvent.clientX - startX);
+  }
+
+  function onEnd() {
+    resizer.removeEventListener('pointermove', onMove);
+    resizer.removeEventListener('pointerup', onEnd);
+    resizer.removeEventListener('pointercancel', onEnd);
+    resizer.classList.remove('dragging');
+    document.body.classList.remove('resizing');
+    writeStorage(sidebarWidthKey, Math.round(filesAside.getBoundingClientRect().width));
+  }
+
+  resizer.addEventListener('pointermove', onMove);
+  resizer.addEventListener('pointerup', onEnd);
+  resizer.addEventListener('pointercancel', onEnd);
+});
+
+resizer.addEventListener('dblclick', () => {
+  setSidebarWidth(null);
+  writeStorage(sidebarWidthKey, null);
 });
 
 document.addEventListener('keydown', (event) => {
