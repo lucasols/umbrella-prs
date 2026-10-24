@@ -86,6 +86,7 @@ export function renderSyncDiffHtml(
     '<button type="button" id="prev" title="Previous file">← Prev <kbd class="shortcut">p</kbd></button>',
     '<span id="position" class="muted"></span>',
     '<button type="button" id="next" title="Next file">Next → <kbd class="shortcut">n</kbd></button>',
+    '<button type="button" id="undo" title="Unmark the last file marked as viewed and go back to it">Undo <kbd class="shortcut">u</kbd></button>',
     '</span>',
     '<label id="imports" class="check"><input type="checkbox" id="hide-imports"> <span id="imports-label"></span></label>',
     '<button type="button" id="mode"></button>',
@@ -437,7 +438,12 @@ function updateProgress() {
   progress.textContent = visible.filter(isViewed).length + ' / ' + visible.length + ' viewed';
 }
 
+// files marked as viewed, by action, so the last marks can be undone
+const viewedHistory = [];
+
 function setViewed(targets, value) {
+  if (value) viewedHistory.push(targets);
+
   for (const entry of targets) {
     const name = entry.fileDiff.name;
 
@@ -468,6 +474,18 @@ function setViewed(targets, value) {
 
   updateProgress();
   updateFolders();
+}
+
+// unmarks the last files marked as viewed that still are, and goes back to them
+function undoViewed() {
+  while (viewedHistory.length > 0) {
+    const targets = viewedHistory.pop().filter(isViewed);
+    if (targets.length === 0) continue;
+
+    setCurrent(targets[0]);
+    setViewed(targets, false);
+    return;
+  }
 }
 
 // the next unviewed file after the entry, wrapping around, or the entry itself
@@ -743,6 +761,7 @@ const modeButton = document.getElementById('mode');
 const nav = document.getElementById('nav');
 const prevButton = document.getElementById('prev');
 const nextButton = document.getElementById('next');
+const undoButton = document.getElementById('undo');
 const position = document.getElementById('position');
 const importsToggle = document.getElementById('hide-imports');
 const importOnlyCount = entries.filter((entry) => entry.importOnly).length;
@@ -785,6 +804,7 @@ function render() {
   position.textContent = index + 1 + ' / ' + visible.length;
   prevButton.disabled = index <= 0;
   nextButton.disabled = index >= visible.length - 1;
+  undoButton.disabled = !viewedHistory.some((targets) => targets.some(isViewed));
 
   document.body.classList.toggle('single', mode === 'single');
   modeButton.textContent = mode === 'single' ? 'All files' : 'One file';
@@ -891,6 +911,7 @@ modeButton.addEventListener('click', () => {
 
 prevButton.addEventListener('click', () => move(-1));
 nextButton.addEventListener('click', () => move(1));
+undoButton.addEventListener('click', undoViewed);
 
 document.getElementById('imports').classList.toggle('hidden', importOnlyCount === 0);
 document.getElementById('imports-label').textContent =
@@ -910,6 +931,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'n') move(1);
   else if (event.key === 'p') move(-1);
   else if (event.key === 'v' && current) setViewed([current], !isViewed(current));
+  else if (event.key === 'u') undoViewed();
 });
 
 renderSidebar();
