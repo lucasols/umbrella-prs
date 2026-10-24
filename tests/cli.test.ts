@@ -35,10 +35,12 @@ async function cli(
     isTTY = false,
     env = {},
     prompter,
+    stdin = '',
   }: {
     isTTY?: boolean;
     env?: Record<string, string>;
     prompter?: Prompter;
+    stdin?: string;
   } = {},
 ) {
   let stdout = '';
@@ -53,9 +55,22 @@ async function cli(
     isTTY,
     exec: repo.exec,
     prompter,
+    readStdin: () => Promise.resolve(stdin),
   });
 
   return { exitCode, stdout, stderr };
+}
+
+const viewerDataRegex =
+  /<script type="application\/json" id="sync-diff-data">(.*?)<\/script>/s;
+
+/** The data embedded in a viewer page */
+function viewerData(file: string): Record<string, unknown> {
+  const match = viewerDataRegex.exec(
+    readFileSync(path.join(repo.dir, file), 'utf8'),
+  );
+
+  return parseJson(match?.[1] ?? '');
 }
 
 function parseJson(text: string): Record<string, unknown> {
@@ -190,6 +205,69 @@ describe('cli', () => {
     expect(readFileSync(path.join(repo.dir, 'viewer.html'), 'utf8')).toContain(
       'parsePatchFiles',
     );
+  });
+
+  test('diff view opens a format-patch series with a section per commit', async () => {
+    repo.commit('first change', { 'app.ts': lines(10, { 2: 'first' }) });
+    repo.commit('second change', { 'other.ts': 'other\n' });
+    writeFileSync(
+      path.join(repo.dir, 'changes.patch'),
+      repo.git('format-patch', '-2', '--stdout'),
+    );
+
+    const result = await cli([
+      'diff',
+      'view',
+      'changes.patch',
+      '--out',
+      'viewer.html',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(EXIT.ok);
+    expect(parseJson(result.stdout).file).toBe(
+      path.join(repo.dir, 'viewer.html'),
+    );
+    expect(viewerData('viewer.html')).toMatchObject({
+      kind: 'patch',
+      head: path.join(repo.dir, 'changes.patch'),
+      sections: [
+        { rightLabel: 'first change', conflictedFiles: [] },
+        { rightLabel: 'second change', conflictedFiles: [] },
+      ],
+    });
+  });
+
+  test('diff view reads a diff from stdin', async () => {
+    const diff = [
+      '--- a/app.ts',
+      '+++ b/app.ts',
+      '@@ -1 +1 @@',
+      '-import { a } from "./a";',
+      '+import { b } from "./b";',
+      '',
+    ].join('\n');
+
+    const result = await cli(
+      ['diff', 'view', '-', '--out', 'viewer.html', '--json'],
+      { stdin: diff },
+    );
+
+    expect(result.exitCode).toBe(EXIT.ok);
+    expect(viewerData('viewer.html')).toMatchObject({
+      kind: 'patch',
+      head: 'stdin',
+      sections: [{ rightLabel: 'stdin', diff }],
+    });
+  });
+
+  test('diff view rejects files that are not diffs', async () => {
+    writeFileSync(path.join(repo.dir, 'notes.txt'), 'just notes\n');
+
+    const result = await cli(['diff', 'view', 'notes.txt']);
+
+    expect(result.exitCode).toBe(EXIT.usage);
+    expect(result.stderr).toContain('notes.txt is not a diff');
   });
 
   test('exits 5 on a dirty worktree with the fix', async () => {

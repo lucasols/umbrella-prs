@@ -1,10 +1,11 @@
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs, type ParseArgsConfig } from 'node:util';
 import { isRecord } from '../utils.typeGuards';
 import { defaultExec, type Exec } from '../exec';
 import { parseBranchStrict } from '../naming';
 import { renderSyncDiffComment } from '../syncDiff';
-import { renderSyncDiffHtml } from '../syncDiffHtml';
+import { renderPatchHtml, renderSyncDiffHtml } from '../syncDiffHtml';
 import type { VerifyResult } from '../verify';
 import {
   createUmbrellaPrs,
@@ -21,6 +22,8 @@ import {
   PromptCancelledError,
   type Prompter,
 } from './prompts';
+
+const diffStartRegex = /^(?:diff --git |--- |\+\+\+ )/m;
 
 /** `123`, `#123` or a PR URL */
 const prTargetRegex =
@@ -125,6 +128,7 @@ type CommandContext = {
   log: (text: string) => void;
   /** Opens a file in the default app, a no-op when not attached to a terminal */
   openFile: (filePath: string) => Promise<void>;
+  readStdin: () => Promise<string>;
 };
 
 function getString(ctx: CommandContext, name: string): string | undefined {
@@ -617,6 +621,63 @@ function writeOutput(ctx: CommandContext, file: string, content: string) {
   writeFileSync(filePath, content);
 
   return filePath;
+}
+
+async function diffViewCmd(ctx: CommandContext): Promise<CommandOutput> {
+  const target = ctx.positionals[0];
+
+  if (target === undefined) {
+    throw usageError(
+      'Missing the diff file',
+      'Use `umbrella-prs diff view <file>`, or `-` to read it from stdin',
+    );
+  }
+
+  const fromStdin = target === '-';
+  const sourcePath = fromStdin ? null : path.resolve(ctx.cwd, target);
+
+  if (sourcePath !== null && !existsSync(sourcePath)) {
+    throw usageError(`File not found: ${target}`);
+  }
+
+  const diff =
+    sourcePath === null ?
+      await ctx.readStdin()
+    : readFileSync(sourcePath, 'utf8');
+
+  if (!diffStartRegex.test(diff)) {
+    throw usageError(
+      `${fromStdin ? 'stdin' : target} is not a diff`,
+      'Pass the output of `git diff`, `git format-patch` or `diff -u`',
+    );
+  }
+
+  const name = sourcePath === null ? 'stdin' : path.basename(sourcePath);
+  const out = getString(ctx, 'out');
+  const filePath =
+    out !== undefined ?
+      path.resolve(ctx.cwd, out)
+    : path.join(
+        tmpdir(),
+        'umbrella-prs',
+        `diff-${name}-${createHash('sha1')
+          .update(sourcePath ?? diff)
+          .digest('hex')
+          .slice(0, 8)}.html`,
+      );
+
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(
+    filePath,
+    renderPatchHtml({ name, id: sourcePath ?? undefined, diff }),
+  );
+
+  if (!getBoolean(ctx, 'no-open')) await ctx.openFile(filePath);
+
+  return {
+    data: { file: filePath },
+    text: [`Diff viewer written to ${filePath}`],
+  };
 }
 
 async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
@@ -1228,6 +1289,24 @@ export const commands: CommandDef[] = [
     run: diffSyncCmd,
   },
   {
+    path: ['diff', 'view'],
+    args: '<file|->',
+    description:
+      'Open a .diff or .patch file (or `-` for stdin) in the HTML viewer, where files can be marked as viewed',
+    examples: [
+      'umbrella-prs diff view changes.patch',
+      'git diff main | umbrella-prs diff view -',
+    ],
+    options: {
+      out: { type: 'string', description: 'Write the viewer to this file' },
+      'no-open': {
+        type: 'boolean',
+        description: 'Do not open the HTML viewer',
+      },
+    },
+    run: diffViewCmd,
+  },
+  {
     path: ['diff', 'child'],
     args: '[branch]',
     description:
@@ -1413,6 +1492,18 @@ function formatOptions(options: Record<string, OptionDef>) {
   );
 }
 
+async function readProcessStdin(): Promise<string> {
+  let text = '';
+
+  process.stdin.setEncoding('utf8');
+
+  for await (const chunk of process.stdin) {
+    if (typeof chunk === 'string') text += chunk;
+  }
+
+  return text;
+}
+
 export type CliIo = {
   argv: string[];
   cwd: string;
@@ -1422,6 +1513,9 @@ export type CliIo = {
   isTTY: boolean;
   exec?: Exec;
   prompter?: Prompter;
+  /** Whether files can be opened in the default app, defaults to `isTTY` */
+  canOpenFiles?: boolean;
+  readStdin?: () => Promise<string>;
 };
 
 export async function runCli(io: CliIo): Promise<number> {
@@ -1510,7 +1604,7 @@ export async function runCli(io: CliIo): Promise<number> {
     cwd,
     log,
     openFile: async (filePath) => {
-      if (!io.isTTY || json) return;
+      if (!(io.canOpenFiles ?? io.isTTY) || json) return;
 
       const [cmd, ...args] =
         process.platform === 'darwin' ? ['open']
@@ -1519,6 +1613,7 @@ export async function runCli(io: CliIo): Promise<number> {
 
       if (cmd) await (io.exec ?? defaultExec)(cmd, [...args, filePath]);
     },
+    readStdin: io.readStdin ?? readProcessStdin,
     umbrella: () => {
       if (umbrellaInstance) return umbrellaInstance;
 

@@ -3,7 +3,11 @@ import {
   isImportOnlyChange,
   splitFileDiffs,
 } from './childDiff';
-import type { SyncBaseDiff, SyncDiffResult } from './syncDiff';
+import type {
+  SyncBaseDiff,
+  SyncDiffContents,
+  SyncDiffResult,
+} from './syncDiff';
 
 const diffsModuleUrl = 'https://esm.sh/@pierre/diffs@1.6.1';
 const themingColorModuleUrl = 'https://esm.sh/@pierre/theming@1.0.2/color';
@@ -19,32 +23,6 @@ export function renderSyncDiffHtml(
   result: SyncDiffResult,
   { base }: { base?: SyncBaseDiff } = {},
 ): string {
-  const data = {
-    head: result.head,
-    strategy: result.strategy,
-    base:
-      base ?
-        {
-          leftLabel: base.label,
-          rightLabel: base.branchLabel,
-          compareTo: base.to,
-          conflictedFiles: [],
-          diff: base.diff,
-          contents: base.contents ?? null,
-          importOnlyFiles: getImportOnlyFiles(base.diff),
-        }
-      : null,
-    sections: result.sections.map((section) => ({
-      leftLabel: section.leftLabel,
-      rightLabel: section.rightLabel,
-      compareTo: section.compareTo,
-      conflictedFiles: section.conflictedFiles,
-      diff: section.diff,
-      contents: section.contents ?? null,
-      importOnlyFiles: getImportOnlyFiles(section.diff),
-    })),
-  };
-
   const labels = [
     ...new Set(
       result.sections.map(
@@ -53,13 +31,164 @@ export function renderSyncDiffHtml(
     ),
   ].join(', ');
 
+  return renderViewerHtml({
+    title: `Sync diff ${result.head.slice(0, 12)}`,
+    heading: 'Sync diff',
+    views:
+      base ?
+        [
+          '<nav class="views">',
+          '<a href="#" data-view="sync">Sync changes</a>',
+          `<a href="#base" data-view="base">${escapeHtml(base.branchLabel)} vs ${escapeHtml(base.label)}</a>`,
+          '</nav>',
+        ]
+      : [],
+    subtitle: `${escapeHtml(labels)} → <code>${escapeHtml(result.head.slice(0, 12))}</code>`,
+    data: {
+      kind: 'sync',
+      head: result.head,
+      storage: {
+        // shared by both views and keyed by the merged branches, so it is
+        // kept when the sync PR is updated
+        viewed: `umbrella-prs:sync-diff-viewed-files:${JSON.stringify(
+          result.sections.map((section) => [
+            section.leftLabel,
+            section.rightLabel,
+          ]),
+        )}`,
+        current: `umbrella-prs:sync-diff-current:${result.head}`,
+      },
+      base:
+        base ?
+          viewerSection({
+            leftLabel: base.label,
+            rightLabel: base.branchLabel,
+            compareTo: base.to,
+            diff: base.diff,
+            contents: base.contents,
+          })
+        : null,
+      sections: result.sections.map((section) => viewerSection(section)),
+    },
+  });
+}
+
+const mboxCommitRegex = /^From ([0-9a-f]{40}) /m;
+const patchSubjectRegex = /^Subject: (?:\[[^\]]*\] *)?(.*)$/m;
+
+/**
+ * Standalone viewer of a `.diff` or `.patch` file, one section per commit for
+ * `git format-patch` series. Viewed files are saved per `id`
+ */
+export function renderPatchHtml({
+  name,
+  id = name,
+  diff,
+}: {
+  name: string;
+  /** Identifies the diff in the browser storage, defaults to `name` */
+  id?: string;
+  diff: string;
+}): string {
+  const commits = diff
+    .split(new RegExp(`(?=${mboxCommitRegex.source})`, 'm'))
+    .filter((part) => mboxCommitRegex.test(part));
+  const sections =
+    commits.length > 1 ?
+      commits.map((commit) =>
+        viewerSection({
+          leftLabel: '',
+          rightLabel: patchSubjectRegex.exec(commit)?.[1] ?? 'Commit',
+          compareTo: mboxCommitRegex.exec(commit)?.[1] ?? '',
+          diff: commit,
+        }),
+      )
+    : [viewerSection({ leftLabel: '', rightLabel: name, compareTo: '', diff })];
+
+  return renderViewerHtml({
+    title: `Diff ${name}`,
+    heading: 'Diff',
+    views: [],
+    subtitle: `<code>${escapeHtml(name)}</code>`,
+    data: {
+      kind: 'patch',
+      head: id,
+      storage: {
+        viewed: `umbrella-prs:diff-viewed-files:${id}`,
+        current: `umbrella-prs:diff-current:${id}`,
+      },
+      base: null,
+      sections,
+    },
+  });
+}
+
+type ViewerSection = {
+  leftLabel: string;
+  rightLabel: string;
+  compareTo: string;
+  conflictedFiles: string[];
+  diff: string;
+  contents: SyncDiffContents | null;
+  importOnlyFiles: string[];
+};
+
+function viewerSection({
+  leftLabel,
+  rightLabel,
+  compareTo,
+  diff,
+  conflictedFiles = [],
+  contents,
+}: {
+  leftLabel: string;
+  rightLabel: string;
+  compareTo: string;
+  diff: string;
+  conflictedFiles?: string[];
+  contents?: SyncDiffContents;
+}): ViewerSection {
+  return {
+    leftLabel,
+    rightLabel,
+    compareTo,
+    conflictedFiles,
+    diff,
+    contents: contents ?? null,
+    importOnlyFiles: getImportOnlyFiles(diff),
+  };
+}
+
+type ViewerData = {
+  kind: 'sync' | 'patch';
+  head: string;
+  /** localStorage keys of the viewed files and of the selected file */
+  storage: { viewed: string; current: string };
+  base: ViewerSection | null;
+  sections: ViewerSection[];
+};
+
+function renderViewerHtml({
+  title,
+  heading,
+  views,
+  subtitle,
+  data,
+}: {
+  title: string;
+  heading: string;
+  views: string[];
+  /** html */
+  subtitle: string;
+  data: ViewerData;
+}): string {
   return [
     '<!doctype html>',
     '<html lang="en">',
     '<head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    `<title>Sync diff ${escapeHtml(result.head.slice(0, 12))}</title>`,
+    `<title>${escapeHtml(title)}</title>`,
     '<link rel="preconnect" href="https://fonts.googleapis.com">',
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
     `<link rel="stylesheet" href="${fontsUrl}">`,
@@ -69,16 +198,9 @@ export function renderSyncDiffHtml(
     '<body>',
     '<header class="top">',
     '<div class="title">',
-    '<strong>Sync diff</strong>',
-    ...(base ?
-      [
-        '<nav class="views">',
-        '<a href="#" data-view="sync">Sync changes</a>',
-        `<a href="#base" data-view="base">${escapeHtml(base.branchLabel)} vs ${escapeHtml(base.label)}</a>`,
-        '</nav>',
-      ]
-    : []),
-    `<span class="muted">${escapeHtml(labels)} → <code>${escapeHtml(result.head.slice(0, 12))}</code></span>`,
+    `<strong>${escapeHtml(heading)}</strong>`,
+    ...views,
+    `<span class="muted">${subtitle}</span>`,
     '</div>',
     '<div class="actions">',
     '<span id="progress" class="muted"></span>',
@@ -286,15 +408,11 @@ for (const link of document.querySelectorAll('.views a')) {
 
 window.addEventListener('hashchange', () => location.reload());
 const viewName = baseView ? 'base' : 'sync';
-// shared by both views and keyed by the merged branches, so it is kept when
-// the sync PR is updated
-const viewedKey = 'umbrella-prs:sync-diff-viewed-files:' + JSON.stringify(
-  data.sections.map((section) => [section.leftLabel, section.rightLabel]),
-);
+const viewedKey = data.storage.viewed;
 const styleKey = 'umbrella-prs:sync-diff-style';
 const modeKey = 'umbrella-prs:sync-diff-mode';
 // the selected file, kept across modes and views
-const currentKey = 'umbrella-prs:sync-diff-current:' + data.head;
+const currentKey = data.storage.current;
 const importsKey = 'umbrella-prs:sync-diff-hide-imports';
 const wrapKey = 'umbrella-prs:sync-diff-wrap';
 const themeKey = 'umbrella-prs:sync-diff-theme';
@@ -359,14 +477,21 @@ const multipleSections = sections.length > 1;
 const entries = [];
 const entriesByDiff = new Map();
 
+const usedIds = new Set();
+
 sections.forEach((section, sectionIndex) => {
   if (!section.diff) return;
 
   const patches = parsePatchFiles(section.diff + '\n', 'section-' + sectionIndex);
 
   for (const fileDiff of patches.flatMap((patch) => patch.files)) {
+    // a plain diff can have the same file more than once
+    let id = sectionIndex + ':' + fileDiff.name;
+    for (let count = 2; usedIds.has(id); count++) id = sectionIndex + ':' + fileDiff.name + '#' + count;
+    usedIds.add(id);
+
     const entry = {
-      id: sectionIndex + ':' + fileDiff.name,
+      id,
       section,
       fileDiff,
       conflicted: section.conflictedFiles.includes(fileDiff.name),
@@ -653,7 +778,7 @@ function renderSidebar() {
       aside.append(
         el('div', {
           className: 'section-title',
-          textContent: section.rightLabel + ' (' + section.compareTo.slice(0, 12) + ')',
+          textContent: section.rightLabel + (section.compareTo ? ' (' + section.compareTo.slice(0, 12) + ')' : ''),
         }),
       );
     }
@@ -676,6 +801,18 @@ function renderSummary() {
       el('p', {
         textContent: 'The files changed by the sync compared with ' + data.base.leftLabel +
           ', as the ' + data.base.rightLabel + ' PR shows them once the sync PR is merged. ' + entries.length + ' files.',
+      }),
+      emptyNote,
+    );
+
+    return summary;
+  }
+
+  if (data.kind === 'patch') {
+    summary.append(
+      el('p', {
+        textContent: entries.length + (entries.length === 1 ? ' file' : ' files') + ' changed' +
+          (multipleSections ? ' in ' + sections.length + ' commits.' : '.'),
       }),
       emptyNote,
     );
@@ -796,6 +933,7 @@ function render() {
 
   emptyNote.textContent = entries.length > 0 ? 'All the changes are import-only.'
     : baseView ? 'There are no changes on top of ' + data.base.leftLabel + '.'
+    : data.kind === 'patch' ? 'The diff has no file changes.'
     : 'The PR matches the automatic merge, there are no conflict resolutions or manual edits.';
   emptyNote.classList.toggle('hidden', visible.length > 0);
 

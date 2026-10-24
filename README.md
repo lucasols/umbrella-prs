@@ -58,6 +58,8 @@ umbrella-prs tree
 umbrella-prs diff sync --out sync.diff                    # conflict resolutions of a sync branch
 umbrella-prs diff sync 123 --html                         # of a sync PR, also merged ones, in the browser
 umbrella-prs diff child --exclude '**/pt.json' --ignore-imports --out pr.diff
+umbrella-prs diff view changes.patch                     # any .diff/.patch file in the viewer
+git diff main | umbrella-prs diff view -
 umbrella-prs pr create
 umbrella-prs parse feature/umbrella/plans --json
 umbrella-prs find-umbrella plans --json
@@ -116,6 +118,8 @@ The comment always starts with the command that opens the diff in the browser, e
 - A theme switcher (GitHub Dark by default, GitHub Light and the Pierre themes from [diffshub.com](https://diffshub.com), fixed or following the system). The page colors are derived from the theme.
 
 `diff sync` takes a branch, a commit or a PR (`123`, `#123` or its URL). For a merged PR, the base from before the merge is used.
+
+`diff view <file>` opens any `.diff` or `.patch` file in the same viewer, `-` reads it from stdin. A `git format-patch` series gets a section per commit. Viewed files are saved per file path.
 
 ## Library
 

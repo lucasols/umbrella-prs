@@ -17,6 +17,8 @@ const exitCode = await runCli({
   stdout: (text) => process.stdout.write(text),
   stderr: (text) => process.stderr.write(text),
   isTTY: Boolean(process.stdin.isTTY && process.stderr.isTTY),
+  // `git diff | umbrella-prs diff view -` still opens the viewer
+  canOpenFiles: Boolean(process.stderr.isTTY),
 });
 
 process.exitCode = exitCode;
