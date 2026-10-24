@@ -83,9 +83,9 @@ export function renderSyncDiffHtml(
     '<div class="actions">',
     '<span id="progress" class="muted"></span>',
     '<span id="nav" class="nav">',
-    '<button type="button" id="prev" title="Previous file (p)">← Prev</button>',
+    '<button type="button" id="prev" title="Previous file">← Prev <kbd class="shortcut">p</kbd></button>',
     '<span id="position" class="muted"></span>',
-    '<button type="button" id="next" title="Next file (n)">Next →</button>',
+    '<button type="button" id="next" title="Next file">Next → <kbd class="shortcut">n</kbd></button>',
     '</span>',
     '<label id="imports" class="check"><input type="checkbox" id="hide-imports"> <span id="imports-label"></span></label>',
     '<button type="button" id="mode"></button>',
@@ -254,6 +254,16 @@ input[type='checkbox'] { accent-color: var(--accent); }
   user-select: none;
 }
 .viewed-toggle:has(input:checked) { color: var(--addition); }
+/* shortcuts only work in the one file mode */
+.shortcut {
+  display: none;
+  padding: 0 4px;
+  border: 1px solid var(--border-opaque);
+  border-radius: 4px;
+  color: var(--muted);
+  font: 11px/1.4 var(--diffs-font-family);
+}
+body.single .shortcut { display: inline-block; }
 .summary { padding: 12px 16px 0; }
 .summary p { margin: 0 0 8px; }
 .empty { padding: 24px 16px; color: var(--muted); }
@@ -715,10 +725,11 @@ function viewerOptions() {
       const entry = entriesById.get(context?.item?.id) ?? entriesByDiff.get(fileDiff);
       if (!entry) return null;
       entry.toggles = entry.toggles.filter((toggle) => toggle.isConnected);
-      return el('label', { className: 'viewed-toggle' }, [
+      return el('label', { className: 'viewed-toggle', title: 'Mark as viewed' }, [
         ...(entry.conflicted ? [el('span', { className: 'badge', textContent: 'conflict' })] : []),
         createToggle(entry),
         'Viewed',
+        el('kbd', { className: 'shortcut', textContent: 'v' }),
       ]);
     },
   };
@@ -775,6 +786,7 @@ function render() {
   prevButton.disabled = index <= 0;
   nextButton.disabled = index >= visible.length - 1;
 
+  document.body.classList.toggle('single', mode === 'single');
   modeButton.textContent = mode === 'single' ? 'All files' : 'One file';
   modeButton.title = mode === 'single' ? 'Show all the files' : 'Review one file at a time';
   styleButton.textContent = diffStyle === 'split' ? 'Unified' : 'Split';
@@ -892,7 +904,8 @@ importsToggle.addEventListener('change', () => {
 
 document.addEventListener('keydown', (event) => {
   if (mode !== 'single' || event.metaKey || event.ctrlKey || event.altKey) return;
-  if (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable]')) return;
+  // checkboxes keep the focus after a click, only typing fields take the keys
+  if (event.target instanceof HTMLElement && event.target.closest('input:not([type="checkbox"]), textarea, select, [contenteditable]')) return;
 
   if (event.key === 'n') move(1);
   else if (event.key === 'p') move(-1);
