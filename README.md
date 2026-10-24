@@ -56,6 +56,7 @@ umbrella-prs convert my-work --umbrella new-billing       # child + merge the cu
 umbrella-prs sync [--stash]                               # child <- umbrella, umbrella <- base
 umbrella-prs tree
 umbrella-prs diff sync --out sync.diff                    # conflict resolutions of a sync branch
+umbrella-prs diff sync 123 --html                         # of a sync PR, also merged ones, in the browser
 umbrella-prs diff child --exclude '**/pt.json' --ignore-imports --out pr.diff
 umbrella-prs pr create
 umbrella-prs parse feature/umbrella/plans --json
@@ -102,6 +103,17 @@ The sync diff shows what a sync PR changed on top of the automatic merge: confli
 4. The result is diffed against the PR head (`HEAD^2` in the PR merge checkout), and the conflict markers are relabeled with branch names.
 
 When the PR merged more than one branch, each merge commit gets its own section.
+
+The comment always starts with the command that opens the diff in the browser, e.g. `umbrella-prs diff sync 123 --html`. Diffs too big for the comment show only that command, plus the plain git command in a collapsed block.
+
+`diff sync --html` writes a standalone page, to `--out` or a temp file, and opens it (`--no-open` skips that). It renders the diff with [`@pierre/diffs`](https://diffs.com), loaded from esm.sh, and has:
+
+- A file tree with folders. Files and whole folders can be marked as viewed. Viewed files are collapsed and saved in the browser per sync PR (its merged branches) until their diff changes.
+- One file at a time mode, with `n`/`p` to move and `v` to mark as viewed and go to the next unviewed file.
+- A toggle that hides import-only changes.
+- Expandable unchanged lines, split and unified layouts.
+
+`diff sync` takes a branch, a commit or a PR (`123`, `#123` or its URL). For a merged PR, the base from before the merge is used.
 
 ## Library
 

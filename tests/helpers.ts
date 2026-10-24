@@ -60,6 +60,10 @@ export type FakePr = {
   isDraft: boolean;
   body: string;
   state: 'open' | 'merged' | 'closed';
+  /** Defaults to the head branch on the remote */
+  headRefOid?: string;
+  /** Defaults to the base branch on the remote */
+  baseRefOid?: string;
 };
 
 export type TestRepo = {
@@ -195,7 +199,15 @@ export function createTestRepo(): TestRepo {
           prs
             .filter((pr) => pr.state === state)
             .filter((pr) => head === undefined || pr.headRefName === head)
-            .map(({ body: _body, state: _state, ...pr }) => pr),
+            .map(
+              ({
+                body: _body,
+                state: _state,
+                headRefOid: _headRefOid,
+                baseRefOid: _baseRefOid,
+                ...pr
+              }) => pr,
+            ),
         ),
       );
     }
@@ -204,7 +216,21 @@ export function createTestRepo(): TestRepo {
     const pr = prs.find((item) => item.number === prNumber);
 
     if (cmd === 'pr' && sub === 'view') {
-      return pr ? ok(`${pr.body}\n`) : fail('not found');
+      if (!pr) return fail('not found');
+
+      if (getFlag(args, '--json')?.includes('headRefOid')) {
+        return ok(
+          JSON.stringify({
+            headRefName: pr.headRefName,
+            headRefOid: pr.headRefOid ?? resolveRemoteRef(pr.headRefName),
+            baseRefName: pr.baseRefName,
+            baseRefOid: pr.baseRefOid ?? resolveRemoteRef(pr.baseRefName),
+            state: pr.state.toUpperCase(),
+          }),
+        );
+      }
+
+      return ok(`${pr.body}\n`);
     }
 
     if (cmd === 'pr' && sub === 'edit') {

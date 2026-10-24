@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { getAutoApproveEligibility } from '../src/autoApprove';
-import { removeImportOnlyChanges } from '../src/childDiff';
+import { getDiffFilePath, removeImportOnlyChanges } from '../src/childDiff';
+import { renderSyncDiffComment, type SyncDiffResult } from '../src/syncDiff';
 import { parseConfig, resolveConfig } from '../src/config';
 import { getDependencyChain, resolveCurrentBase } from '../src/dependency';
 import {
@@ -559,6 +560,62 @@ describe('misc', () => {
         '',
       ].join('\n'),
     );
+  });
+
+  test('reads the path of a file diff', () => {
+    expect(
+      getDiffFilePath(
+        ['diff --git a/a.ts b/b.ts', '--- a/a.ts', '+++ b/b.ts'].join('\n'),
+      ),
+    ).toBe('b.ts');
+    expect(
+      getDiffFilePath(
+        ['diff --git a/a.ts b/a.ts', '--- a/a.ts', '+++ /dev/null'].join('\n'),
+      ),
+    ).toBe('a.ts');
+    expect(
+      getDiffFilePath(
+        [
+          'diff --git "a/a b.ts" "b/a b.ts"',
+          '--- "a/a b.ts"',
+          '+++ "b/a b.ts"',
+        ].join('\n'),
+      ),
+    ).toBe('a b.ts');
+  });
+
+  test('sync diff comments always show the review command', () => {
+    const result: SyncDiffResult = {
+      strategy: 'combined',
+      head: 'a'.repeat(40),
+      reviewCommand: 'umbrella-prs diff sync 7 --html',
+      sections: [
+        {
+          leftLabel: 'feature/umbrella/billing',
+          rightLabel: 'beta',
+          left: 'b'.repeat(40),
+          right: 'c'.repeat(40),
+          mergeBase: null,
+          compareTo: 'a'.repeat(40),
+          conflictedFiles: ['app.ts'],
+          diff: '-<<<<<<< feature/umbrella/billing\n+kept',
+          reproCommand: 'git diff x y',
+        },
+      ],
+    };
+
+    const small = renderSyncDiffComment(result, { maxChars: 1000 });
+
+    expect(small).toContain('~~~sh\numbrella-prs diff sync 7 --html\n~~~');
+    expect(small).toContain('~~~diff\n-<<<<<<< feature/umbrella/billing');
+    expect(small).not.toContain('git diff x y');
+
+    const big = renderSyncDiffComment(result, { maxChars: 10 });
+
+    expect(big).toContain('umbrella-prs diff sync 7 --html');
+    expect(big).toContain('<details><summary>Plain git command</summary>');
+    expect(big).toContain('git diff x y');
+    expect(big).not.toContain('~~~diff');
   });
 
   test('validates config files', () => {

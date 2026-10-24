@@ -51,6 +51,8 @@ import {
 import { buildTree } from './tree';
 import { verifyPr, type VerifyInput, type VerifyResult } from './verify';
 
+const shaRegex = /^[\da-f]{40,64}$/;
+
 export type OpErrorCode =
   | 'not-umbrella-branch'
   | 'umbrella-not-found'
@@ -1058,11 +1060,18 @@ export function createUmbrellaPrs({
           branch?: string;
         }
       | {
+          mode: 'local';
+          /** Sync PR, its head and base are used, also when it is merged */
+          pr: number;
+        }
+      | {
           mode: 'ci';
           /** Branch the PR targets */
           base: string;
           /** PR head commit, defaults to `HEAD^2` (HEAD is GitHub's merge commit), then `HEAD` */
           headCommit?: string;
+          /** PR number, used in the `reviewCommand` */
+          pr?: number;
         }
     ) & {
       /** Explicit merged branch, skips detecting it from the merge commits */
@@ -1070,17 +1079,45 @@ export function createUmbrellaPrs({
       /** Explicit left branch in local mode, skips resolving the umbrella */
       left?: string;
       exclude?: string[];
+      /** Includes the contents of the changed files, used by the HTML viewer */
+      includeContents?: boolean;
     },
   ): Promise<OpResult<SyncDiffResult>> {
     return attempt(async () => {
       let mode: SyncDiffMode;
       let head: string;
       let left: string;
+      let leftLabel: string | undefined;
 
       if (options.mode === 'ci') {
         mode = 'ci';
         left = options.base;
         head = options.headCommit ?? (await git.secondParent('HEAD')) ?? 'HEAD';
+      } else if ('pr' in options) {
+        mode = 'local';
+
+        const refs = await github.getPrRefs(options.pr);
+
+        await git.tryFetch();
+
+        head = refs.headRefOid;
+
+        // the branch of a merged PR may be deleted
+        if (!(await git.commitExists(head))) {
+          await git.tryFetch(`refs/pull/${options.pr}/head`);
+        }
+
+        if (options.left !== undefined) {
+          left = options.left;
+        } else if (refs.isOpen) {
+          left = refs.baseRefName;
+        } else {
+          // a merged PR is part of its base, so the base from before the merge
+          left = refs.baseRefOid;
+          leftLabel = refs.baseRefName;
+
+          if (!(await git.commitExists(left))) await git.tryFetch(left);
+        }
       } else {
         mode = 'local';
 
@@ -1112,14 +1149,23 @@ export function createUmbrellaPrs({
             `${git.remote}/${branchName}`
             // any other ref, e.g. the head commit of a merged sync PR
           : branchName;
+
+        // the head commit of a PR whose branch was deleted is not fetched
+        if (shaRegex.test(head) && !(await git.commitExists(head))) {
+          await git.tryFetch(head);
+        }
       }
 
       const result = await getSyncDiff({
         mode,
         head,
         left,
+        leftLabel,
+        pr: 'pr' in options ? options.pr : undefined,
         right: options.right,
-        exclude: [...config.diff.exclude, ...(options.exclude ?? [])],
+        exclude: options.exclude ?? [],
+        defaultExclude: config.diff.exclude,
+        includeContents: options.includeContents,
         git,
         github,
       });

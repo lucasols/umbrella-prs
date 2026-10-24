@@ -1,4 +1,5 @@
 import { toPathspec } from './childDiff';
+import { formatCommand } from './exec';
 import type { Git } from './git';
 import type { GitHub } from './github';
 
@@ -7,6 +8,14 @@ const remoteTrackingMergeRegex = /^Merge remote-tracking branch '([^']+)'/;
 const branchMergeRegex = /^Merge branch '([^']+)'/;
 const githubPrMergeRegex = /^Merge pull request #\d+ from /;
 const pullRequestMergeRegex = /^Merge pull request #\d+ from [^/\s]+\/(\S+)/;
+const trailingNewlinesRegex = /\n+$/;
+
+export type SyncDiffContents = {
+  /** Automatic merge, by path */
+  before: Record<string, string>;
+  /** `compareTo`, by path */
+  after: Record<string, string>;
+};
 
 export type SyncDiffSection = {
   /** Branch merged into the PR, from the merge commit message or `--right` */
@@ -19,7 +28,10 @@ export type SyncDiffSection = {
   compareTo: string;
   conflictedFiles: string[];
   diff: string;
+  /** Plain git command that prints the diff */
   reproCommand: string;
+  /** Contents of the changed files, used to expand the context in the HTML viewer */
+  contents?: SyncDiffContents;
 };
 
 export type SyncDiffResult = {
@@ -32,6 +44,8 @@ export type SyncDiffResult = {
   strategy: 'combined' | 'per-merge';
   head: string;
   sections: SyncDiffSection[];
+  /** CLI command that opens the diff in the browser */
+  reviewCommand: string;
 };
 
 export type SyncDiffError = {
@@ -55,21 +69,36 @@ export type GetSyncDiffOptions = {
   head: string;
   /** Branch the PR targets, e.g. the umbrella */
   left: string;
+  /** Name of the left side, defaults to `left` */
+  leftLabel?: string;
+  /** PR number, used in the `reviewCommand` instead of the head and left */
+  pr?: number;
   /** Explicit merged branch, skips detecting it from the merge commits */
   right?: string;
+  /** Globs excluded from the diff, also passed to the `reviewCommand` */
   exclude: readonly string[];
+  /** Globs excluded from the diff that the CLI already applies, e.g. from the config */
+  defaultExclude?: readonly string[];
+  /** Includes the contents of the changed files */
+  includeContents?: boolean;
   git: Git;
   github: GitHub;
   /** Max first-parent commits walked looking for merges */
   maxCommits?: number;
 };
 
+const maxContentBytes = 1_000_000;
+
 export async function getSyncDiff({
   mode,
   head,
   left,
+  leftLabel: leftName = left,
+  pr,
   right,
   exclude,
+  defaultExclude = [],
+  includeContents = false,
   git,
   github,
   maxCommits = 100,
@@ -99,6 +128,15 @@ export async function getSyncDiff({
 
   const leftRef = await resolveRef(git, left);
   const headSha = await git.revParse(head);
+
+  const reviewCommand = formatCommand('umbrella-prs', [
+    'diff',
+    'sync',
+    ...(pr !== undefined ? [String(pr)] : [headSha, '--left', left]),
+    ...(right !== undefined ? ['--right', right] : []),
+    ...exclude.flatMap((glob) => ['--exclude', glob]),
+    '--html',
+  ]);
 
   async function getMergeBase(a: string, b: string): Promise<string | null> {
     if (mode === 'ci') return github.getMergeBase(a, b);
@@ -136,7 +174,7 @@ export async function getSyncDiff({
   const mergedLeft = await getMergeBase(modeRef(leftRef), headSha);
 
   if (!mergedLeft) {
-    return noMerges(`"${left}" and the PR head have no common ancestor`);
+    return noMerges(`"${leftName}" and the PR head have no common ancestor`);
   }
 
   if (right !== undefined) {
@@ -150,7 +188,7 @@ export async function getSyncDiff({
     const section = await diffAgainstAutoMerge({
       left: mergedLeft,
       right: mergedRight,
-      leftLabel: left,
+      leftLabel: leftName,
       rightLabel: right,
       compareTo: headSha,
     });
@@ -162,6 +200,7 @@ export async function getSyncDiff({
             strategy: 'combined',
             head: headSha,
             sections: [section.value],
+            reviewCommand,
           },
         }
       : section;
@@ -195,7 +234,7 @@ export async function getSyncDiff({
     const section = await diffAgainstAutoMerge({
       left: mergedLeft,
       right: latest.secondParent,
-      leftLabel: left,
+      leftLabel: leftName,
       rightLabel: latest.label ?? latest.secondParent.slice(0, 12),
       compareTo: headSha,
     });
@@ -207,6 +246,7 @@ export async function getSyncDiff({
             strategy: 'combined',
             head: headSha,
             sections: [section.value],
+            reviewCommand,
           },
         }
       : section;
@@ -218,7 +258,7 @@ export async function getSyncDiff({
     const section = await diffAgainstAutoMerge({
       left: merge.firstParent,
       right: merge.secondParent,
-      leftLabel: left,
+      leftLabel: leftName,
       rightLabel: merge.label ?? merge.secondParent.slice(0, 12),
       compareTo: merge.sha,
     });
@@ -230,7 +270,7 @@ export async function getSyncDiff({
 
   return {
     ok: true,
-    value: { strategy: 'per-merge', head: headSha, sections },
+    value: { strategy: 'per-merge', head: headSha, sections, reviewCommand },
   };
 
   /**
@@ -346,7 +386,7 @@ export async function getSyncDiff({
       };
     }
 
-    const pathspec = toPathspec({ exclude });
+    const pathspec = toPathspec({ exclude: [...defaultExclude, ...exclude] });
 
     const diffOut = await git.runOk([
       'diff',
@@ -358,10 +398,14 @@ export async function getSyncDiff({
     ]);
 
     // conflict markers are labeled with the commits passed to merge-tree
-    const diff = diffOut
-      .replaceAll(leftCommit, leftLabel)
-      .replaceAll(rightCommit, rightLabel)
-      .trim();
+    function labelMarkers(text: string) {
+      return text
+        .replaceAll(leftCommit, leftLabel)
+        .replaceAll(rightCommit, rightLabel);
+    }
+
+    // `trim` would also remove a trailing empty context line (` `)
+    const diff = labelMarkers(diffOut).replace(trailingNewlinesRegex, '');
 
     const quotedPathspec = pathspec
       .map((part) => (part.startsWith(':(') ? `'${part}'` : part))
@@ -379,8 +423,81 @@ export async function getSyncDiff({
         conflictedFiles: conflictedFiles.filter((file) => file.length > 0),
         diff,
         reproCommand: `git diff $(git merge-tree --write-tree${mergeBase ? ` --merge-base=${mergeBase}` : ''} ${leftCommit} ${rightCommit} | head -1) ${compareTo} -w ${quotedPathspec}`,
+        ...(includeContents && diff ?
+          {
+            contents: await getChangedContents({
+              before: autoMergeTree,
+              after: compareTo,
+              pathspec,
+              mapBefore: labelMarkers,
+            }),
+          }
+        : {}),
       },
     };
+  }
+
+  async function getChangedContents({
+    before,
+    after,
+    pathspec,
+    mapBefore,
+  }: {
+    before: string;
+    after: string;
+    pathspec: string[];
+    mapBefore: (text: string) => string;
+  }): Promise<SyncDiffContents> {
+    const out = await git.runOk([
+      'diff',
+      '--name-status',
+      '-z',
+      before,
+      after,
+      ...pathspec,
+    ]);
+
+    const contents: SyncDiffContents = { before: {}, after: {} };
+    const fields = out.split('\0');
+
+    for (let index = 0; index < fields.length;) {
+      const status = fields[index] ?? '';
+      const hasTwoPaths = status.startsWith('R') || status.startsWith('C');
+      const beforePath = fields[index + 1];
+      const afterPath = hasTwoPaths ? fields[index + 2] : beforePath;
+
+      index += hasTwoPaths ? 3 : 2;
+
+      if (!status || !beforePath || !afterPath) continue;
+
+      if (!status.startsWith('A')) {
+        const text = await readBlob(before, beforePath);
+
+        if (text !== null) contents.before[beforePath] = mapBefore(text);
+      }
+
+      if (!status.startsWith('D')) {
+        const text = await readBlob(after, afterPath);
+
+        if (text !== null) contents.after[afterPath] = text;
+      }
+    }
+
+    return contents;
+  }
+
+  /** `null` for binary and big files */
+  async function readBlob(treeish: string, filePath: string) {
+    const blob = `${treeish}:${filePath}`;
+    const size = await git.run(['cat-file', '-s', blob]);
+
+    if (size.code !== 0 || Number(size.stdout.trim()) > maxContentBytes) {
+      return null;
+    }
+
+    const text = await git.runOk(['cat-file', 'blob', blob]);
+
+    return text.includes('\0') ? null : text;
   }
 }
 
@@ -437,7 +554,16 @@ export function renderSyncDiffComment(
 ): string {
   const sectionMaxChars = Math.floor(maxChars / result.sections.length);
 
-  const parts = ['## Sync diff', ''];
+  const parts = [
+    '## Sync diff',
+    '',
+    'Review it in the browser, where files can be marked as viewed:',
+    '',
+    '~~~sh',
+    result.reviewCommand,
+    '~~~',
+    '',
+  ];
 
   if (result.strategy === 'per-merge') {
     parts.push(
@@ -469,11 +595,15 @@ export function renderSyncDiffComment(
       );
     } else if (section.diff.length > sectionMaxChars) {
       parts.push(
-        'Diff is too big to be shown here, run this to see it:',
+        'Diff is too big to be shown here, open it with the command above.',
+        '',
+        '<details><summary>Plain git command</summary>',
         '',
         '~~~sh',
         section.reproCommand,
         '~~~',
+        '',
+        '</details>',
       );
     } else {
       parts.push('~~~diff', section.diff.replaceAll('~~~', '\\~\\~\\~'), '~~~');

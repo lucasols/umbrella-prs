@@ -21,6 +21,15 @@ export type PrInfo = {
 
 export type FullPrInfo = Required<Omit<PrInfo, 'body'>> & { body?: string };
 
+export type PrRefs = {
+  headRefName: string;
+  headRefOid: string;
+  baseRefName: string;
+  /** Base branch commit when the PR was last updated, kept after it is merged */
+  baseRefOid: string;
+  isOpen: boolean;
+};
+
 export function createGitHub({
   exec,
   cwd,
@@ -159,6 +168,39 @@ export function createGitHub({
         '--base',
         base,
       ]);
+    },
+
+    async getPrRefs(prNumber: number): Promise<PrRefs> {
+      const out = await runOk([
+        'pr',
+        'view',
+        String(prNumber),
+        '--repo',
+        await getRepo(),
+        '--json',
+        'headRefName,headRefOid,baseRefName,baseRefOid,state',
+      ]);
+
+      const value: unknown = JSON.parse(out);
+
+      if (
+        !isRecord(value) ||
+        typeof value.headRefName !== 'string' ||
+        typeof value.headRefOid !== 'string' ||
+        typeof value.baseRefName !== 'string' ||
+        typeof value.baseRefOid !== 'string' ||
+        typeof value.state !== 'string'
+      ) {
+        throw new Error(`Unexpected \`gh pr view ${prNumber}\` output`);
+      }
+
+      return {
+        headRefName: value.headRefName,
+        headRefOid: value.headRefOid,
+        baseRefName: value.baseRefName,
+        baseRefOid: value.baseRefOid,
+        isOpen: value.state === 'OPEN',
+      };
     },
 
     async getPrBody(prNumber: number): Promise<string> {

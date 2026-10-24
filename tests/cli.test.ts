@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { EXIT, runCli } from '../src/cli/run';
@@ -158,6 +158,38 @@ describe('cli', () => {
       conflictedFiles: ['app.ts'],
       hasConflicts: true,
     });
+  });
+
+  test('diff sync writes the html viewer', async () => {
+    await cli(['create', 'umbrella', 'billing']);
+    repo.commit('umbrella change', { 'app.ts': lines(10, { 2: 'umbrella' }) });
+    repo.git('push', '--quiet');
+    repo.git('checkout', '--quiet', 'beta');
+    repo.commit('beta change', { 'app.ts': lines(10, { 2: 'beta' }) });
+    repo.git('push', '--quiet');
+    await cli(['create', 'sync', '--umbrella', 'billing']);
+    repo.write('app.ts', lines(10, { 2: 'umbrella' }));
+    repo.git('add', 'app.ts');
+    repo.git('commit', '--quiet', '--no-edit');
+    repo.git('push', '--quiet', '-u', 'origin', 'under/billing/sync');
+
+    const result = await cli([
+      'diff',
+      'sync',
+      '--html',
+      '--out',
+      'viewer.html',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(EXIT.ok);
+
+    const output = parseJson(result.stdout);
+
+    expect(output.file).toBe(path.join(repo.dir, 'viewer.html'));
+    expect(readFileSync(path.join(repo.dir, 'viewer.html'), 'utf8')).toContain(
+      'parsePatchFiles',
+    );
   });
 
   test('exits 5 on a dirty worktree with the fix', async () => {

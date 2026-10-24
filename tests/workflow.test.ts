@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { renderSyncDiffHtml } from '../src/syncDiffHtml';
 import {
   createTestRepo,
   createTestUmbrella,
@@ -337,6 +338,62 @@ describe('sync diff', () => {
     expect(section?.diff).toContain('->>>>>>> beta');
     expect(section?.diff).toContain('+edited');
     expect(section?.diff).not.toMatch(shaRegex);
+    expect(result.reviewCommand).toBe(
+      `umbrella-prs diff sync ${result.head} --left feature/umbrella/billing --html`,
+    );
+    expect(section?.contents).toBeUndefined();
+  });
+
+  test('includes the contents of the changed files for the viewer', async () => {
+    const u = await createConflictedSync();
+    const result = unwrap(
+      await u.syncDiff({ mode: 'local', includeContents: true }),
+    );
+    const contents = result.sections[0]?.contents;
+
+    expect(contents?.after['README.md']).toBe('edited\n');
+    expect(contents?.before['app.ts']).toContain(
+      '<<<<<<< feature/umbrella/billing',
+    );
+    expect(contents?.before['app.ts']).not.toMatch(shaRegex);
+
+    const html = renderSyncDiffHtml(result);
+
+    expect(html).toContain('<script type="module">');
+    // the diff is embedded as JSON that can't close the script tag
+    expect(html.match(/<\/script>/g)).toHaveLength(2);
+  });
+
+  test('shows the diff of a merged sync PR by number', async () => {
+    await createConflictedSync();
+
+    const pr = repo.addPr({
+      headRefName: 'under/billing/sync',
+      baseRefName: 'feature/umbrella/billing',
+    });
+
+    pr.headRefOid = repo.git('rev-parse', 'origin/under/billing/sync');
+    pr.baseRefOid = repo.git('rev-parse', 'origin/feature/umbrella/billing');
+
+    repo.git('checkout', '--quiet', 'feature/umbrella/billing');
+    repo.git('merge', '--quiet', '--no-ff', '--no-edit', 'under/billing/sync');
+    repo.git('push', '--quiet');
+    repo.git('push', '--quiet', 'origin', '--delete', 'under/billing/sync');
+    pr.state = 'merged';
+
+    const u = createTestUmbrella(repo);
+    const result = unwrap(await u.syncDiff({ mode: 'local', pr: pr.number }));
+
+    expect(result.head).toBe(pr.headRefOid);
+    expect(result.reviewCommand).toBe(
+      `umbrella-prs diff sync ${pr.number} --html`,
+    );
+    expect(result.sections[0]).toMatchObject({
+      leftLabel: 'feature/umbrella/billing',
+      rightLabel: 'beta',
+      conflictedFiles: ['app.ts'],
+    });
+    expect(result.sections[0]?.diff).toContain('+edited');
   });
 
   test('uses HEAD^2 and the compare API in CI mode', async () => {
@@ -359,7 +416,11 @@ describe('sync diff', () => {
 
     const u = createTestUmbrella(repo);
     const result = unwrap(
-      await u.syncDiff({ mode: 'ci', base: 'feature/umbrella/billing' }),
+      await u.syncDiff({
+        mode: 'ci',
+        base: 'feature/umbrella/billing',
+        pr: 102,
+      }),
     );
 
     expect(result.head).toBe(
@@ -374,6 +435,7 @@ describe('sync diff', () => {
     );
 
     expect(posted.body).toContain('## Sync diff');
+    expect(posted.body).toContain('umbrella-prs diff sync 102 --html');
     expect(repo.comments).toHaveLength(1);
 
     unwrap(await u.postSyncDiffComment({ prNumber: 102, result }));

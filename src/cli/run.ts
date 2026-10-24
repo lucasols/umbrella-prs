@@ -4,6 +4,7 @@ import { isRecord } from '../utils.typeGuards';
 import { defaultExec, type Exec } from '../exec';
 import { parseBranchStrict } from '../naming';
 import { renderSyncDiffComment } from '../syncDiff';
+import { renderSyncDiffHtml } from '../syncDiffHtml';
 import type { VerifyResult } from '../verify';
 import {
   createUmbrellaPrs,
@@ -11,7 +12,8 @@ import {
   type OpErrorCode,
   type UmbrellaPrs,
 } from '../umbrella';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadConfig } from './loadConfig';
 import {
@@ -19,6 +21,10 @@ import {
   PromptCancelledError,
   type Prompter,
 } from './prompts';
+
+/** `123`, `#123` or a PR URL */
+const prTargetRegex =
+  /^(?:#?(\d+)|https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d+)\/?.*)$/;
 
 export const EXIT = {
   ok: 0,
@@ -117,6 +123,8 @@ type CommandContext = {
   env: Record<string, string | undefined>;
   cwd: string;
   log: (text: string) => void;
+  /** Opens a file in the default app, a no-op when not attached to a terminal */
+  openFile: (filePath: string) => Promise<void>;
 };
 
 function getString(ctx: CommandContext, name: string): string | undefined {
@@ -612,15 +620,42 @@ function writeOutput(ctx: CommandContext, file: string, content: string) {
 }
 
 async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
+  const html = getBoolean(ctx, 'html');
+  const target = ctx.positionals[0];
+  const prMatch = target === undefined ? null : prTargetRegex.exec(target);
+  const pr = prMatch?.[1] ?? prMatch?.[2];
   const result = unwrap(
     await ctx.umbrella().syncDiff({
       mode: 'local',
-      branch: ctx.positionals[0],
+      ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
       left: getString(ctx, 'left'),
       right: getString(ctx, 'right'),
       exclude: getStrings(ctx, 'exclude'),
+      includeContents: html,
     }),
   );
+
+  if (html) {
+    const out = getString(ctx, 'out');
+    const filePath =
+      out !== undefined ?
+        path.resolve(ctx.cwd, out)
+      : path.join(
+          tmpdir(),
+          'umbrella-prs',
+          `sync-diff-${result.head.slice(0, 12)}.html`,
+        );
+
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(filePath, renderSyncDiffHtml(result));
+
+    if (!getBoolean(ctx, 'no-open')) await ctx.openFile(filePath);
+
+    return {
+      data: { ...result, file: filePath },
+      text: [`Sync diff viewer written to ${filePath}`],
+    };
+  }
 
   const content = result.sections
     .map((section) =>
@@ -891,6 +926,7 @@ async function ciSyncDiff(ctx: CommandContext, base: string) {
     await u.syncDiff({
       mode: 'ci',
       base,
+      pr: getCiInput(ctx).optionalPr(),
       right: getString(ctx, 'right'),
       headCommit: getString(ctx, 'head-commit'),
       exclude: getStrings(ctx, 'exclude'),
@@ -1168,9 +1204,9 @@ export const commands: CommandDef[] = [
   },
   {
     path: ['diff', 'sync'],
-    args: '[branch]',
+    args: '[branch|pr]',
     description:
-      'Conflict resolutions and manual edits of a sync branch, compared with the automatic merge',
+      'Conflict resolutions and manual edits of a sync branch or PR (number, #number or URL), compared with the automatic merge',
     options: {
       left: {
         type: 'string',
@@ -1178,6 +1214,15 @@ export const commands: CommandDef[] = [
       },
       ...syncDiffOptions,
       out: { type: 'string', description: 'Write the diff to this file' },
+      html: {
+        type: 'boolean',
+        description:
+          'Write an HTML viewer, where files can be marked as viewed, and open it',
+      },
+      'no-open': {
+        type: 'boolean',
+        description: 'Do not open the HTML viewer',
+      },
     },
     run: diffSyncCmd,
   },
@@ -1463,6 +1508,16 @@ export async function runCli(io: CliIo): Promise<number> {
     env: io.env,
     cwd,
     log,
+    openFile: async (filePath) => {
+      if (!io.isTTY || json) return;
+
+      const [cmd, ...args] =
+        process.platform === 'darwin' ? ['open']
+        : process.platform === 'win32' ? ['cmd', '/c', 'start', '""']
+        : ['xdg-open'];
+
+      if (cmd) await (io.exec ?? defaultExec)(cmd, [...args, filePath]);
+    },
     umbrella: () => {
       if (umbrellaInstance) return umbrellaInstance;
 
