@@ -1,4 +1,4 @@
-import { toPathspec } from './childDiff';
+import { getDiffFilePath, splitFileDiffs, toPathspec } from './childDiff';
 import { formatCommand } from './exec';
 import type { Git } from './git';
 import type { GitHub } from './github';
@@ -426,6 +426,7 @@ export async function getSyncDiff({
         ...(includeContents && diff ?
           {
             contents: await getChangedContents({
+              git,
               before: autoMergeTree,
               after: compareTo,
               pathspec,
@@ -436,69 +437,146 @@ export async function getSyncDiff({
       },
     };
   }
+}
 
-  async function getChangedContents({
+/** What the umbrella PR shows after the sync, see `getSyncBaseDiff` */
+export type SyncBaseDiff = {
+  /** The merged base branch, e.g. `beta` */
+  label: string;
+  /** The branch being synced, e.g. the umbrella */
+  branchLabel: string;
+  from: string;
+  to: string;
+  diff: string;
+  contents?: SyncDiffContents;
+};
+
+/**
+ * Diff from the merged base commit to the PR head of the files changed by the
+ * sync, how they differ from the base once the sync PR is merged. Uses the
+ * newest merged branch as the base
+ */
+export async function getSyncBaseDiff({
+  git,
+  result,
+  includeContents = false,
+}: {
+  git: Git;
+  result: SyncDiffResult;
+  includeContents?: boolean;
+}): Promise<SyncBaseDiff | null> {
+  const section = result.sections.at(-1);
+
+  if (!section) return null;
+
+  const paths = new Set<string>();
+
+  for (const { diff } of result.sections) {
+    for (const fileDiff of splitFileDiffs(diff)) {
+      const filePath = getDiffFilePath(fileDiff);
+
+      if (filePath !== null) paths.add(filePath);
+    }
+  }
+
+  if (paths.size === 0) return null;
+
+  // the paths come from the sync diff, so the excludes are already applied
+  const pathspec = [
+    '--',
+    ...[...paths].map((filePath) => `:(literal)${filePath}`),
+  ];
+  const diffOut = await git.runOk([
+    'diff',
+    '--no-color',
+    section.right,
+    result.head,
+    ...pathspec,
+  ]);
+  const diff = diffOut.replace(trailingNewlinesRegex, '');
+
+  return {
+    label: section.rightLabel,
+    branchLabel: section.leftLabel,
+    from: section.right,
+    to: result.head,
+    diff,
+    ...(includeContents && diff ?
+      {
+        contents: await getChangedContents({
+          git,
+          before: section.right,
+          after: result.head,
+          pathspec,
+        }),
+      }
+    : {}),
+  };
+}
+
+async function getChangedContents({
+  git,
+  before,
+  after,
+  pathspec,
+  mapBefore = (text) => text,
+}: {
+  git: Git;
+  before: string;
+  after: string;
+  pathspec: string[];
+  mapBefore?: (text: string) => string;
+}): Promise<SyncDiffContents> {
+  const out = await git.runOk([
+    'diff',
+    '--name-status',
+    '-z',
     before,
     after,
-    pathspec,
-    mapBefore,
-  }: {
-    before: string;
-    after: string;
-    pathspec: string[];
-    mapBefore: (text: string) => string;
-  }): Promise<SyncDiffContents> {
-    const out = await git.runOk([
-      'diff',
-      '--name-status',
-      '-z',
-      before,
-      after,
-      ...pathspec,
-    ]);
+    ...pathspec,
+  ]);
 
-    const contents: SyncDiffContents = { before: {}, after: {} };
-    const fields = out.split('\0');
+  const contents: SyncDiffContents = { before: {}, after: {} };
+  const fields = out.split('\0');
 
-    for (let index = 0; index < fields.length;) {
-      const status = fields[index] ?? '';
-      const hasTwoPaths = status.startsWith('R') || status.startsWith('C');
-      const beforePath = fields[index + 1];
-      const afterPath = hasTwoPaths ? fields[index + 2] : beforePath;
+  for (let index = 0; index < fields.length;) {
+    const status = fields[index] ?? '';
+    const hasTwoPaths = status.startsWith('R') || status.startsWith('C');
+    const beforePath = fields[index + 1];
+    const afterPath = hasTwoPaths ? fields[index + 2] : beforePath;
 
-      index += hasTwoPaths ? 3 : 2;
+    index += hasTwoPaths ? 3 : 2;
 
-      if (!status || !beforePath || !afterPath) continue;
+    if (!status || !beforePath || !afterPath) continue;
 
-      if (!status.startsWith('A')) {
-        const text = await readBlob(before, beforePath);
+    if (!status.startsWith('A')) {
+      const text = await readBlob(git, before, beforePath);
 
-        if (text !== null) contents.before[beforePath] = mapBefore(text);
-      }
-
-      if (!status.startsWith('D')) {
-        const text = await readBlob(after, afterPath);
-
-        if (text !== null) contents.after[afterPath] = text;
-      }
+      if (text !== null) contents.before[beforePath] = mapBefore(text);
     }
 
-    return contents;
-  }
+    if (!status.startsWith('D')) {
+      const text = await readBlob(git, after, afterPath);
 
-  /** `null` for binary and big files */
-  async function readBlob(treeish: string, filePath: string) {
-    const blob = `${treeish}:${filePath}`;
-    const size = await git.run(['cat-file', '-s', blob]);
-
-    if (size.code !== 0 || Number(size.stdout.trim()) > maxContentBytes) {
-      return null;
+      if (text !== null) contents.after[afterPath] = text;
     }
-
-    const text = await git.runOk(['cat-file', 'blob', blob]);
-
-    return text.includes('\0') ? null : text;
   }
+
+  return contents;
+}
+
+/** `null` for binary and big files */
+async function readBlob(git: Git, treeish: string, filePath: string) {
+  const blob = `${treeish}:${filePath}`;
+  const size = await git.run(['cat-file', '-s', blob]);
+
+  if (size.code !== 0 || Number(size.stdout.trim()) > maxContentBytes) {
+    return null;
+  }
+
+  const text = await git.runOk(['cat-file', 'blob', blob]);
+
+  return text.includes('\0') ? null : text;
 }
 
 function noMerges(message: string, fix?: string) {

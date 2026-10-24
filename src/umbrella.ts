@@ -38,8 +38,10 @@ import {
 } from './prTemplates';
 import { err, ok, type Result } from './result';
 import {
+  getSyncBaseDiff,
   getSyncDiff,
   renderSyncDiffComment,
+  type SyncBaseDiff,
   type SyncDiffMode,
   type SyncDiffResult,
 } from './syncDiff';
@@ -1081,8 +1083,10 @@ export function createUmbrellaPrs({
       exclude?: string[];
       /** Includes the contents of the changed files, used by the HTML viewer */
       includeContents?: boolean;
+      /** Includes the diff the umbrella PR shows after the sync, see `getSyncBaseDiff` */
+      includeBaseDiff?: boolean;
     },
-  ): Promise<OpResult<SyncDiffResult>> {
+  ): Promise<OpResult<SyncDiffResult & { base?: SyncBaseDiff }>> {
     return attempt(async () => {
       let mode: SyncDiffMode;
       let head: string;
@@ -1181,7 +1185,15 @@ export function createUmbrellaPrs({
         });
       }
 
-      return ok(result.value);
+      if (!options.includeBaseDiff) return ok(result.value);
+
+      const base = await getSyncBaseDiff({
+        git,
+        result: result.value,
+        includeContents: options.includeContents,
+      });
+
+      return ok({ ...result.value, ...(base ? { base } : {}) });
     });
   }
 

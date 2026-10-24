@@ -3,19 +3,37 @@ import {
   isImportOnlyChange,
   splitFileDiffs,
 } from './childDiff';
-import type { SyncDiffResult } from './syncDiff';
+import type { SyncBaseDiff, SyncDiffResult } from './syncDiff';
 
 const diffsModuleUrl = 'https://esm.sh/@pierre/diffs@1.6.1';
+const themingColorModuleUrl = 'https://esm.sh/@pierre/theming@1.0.2/color';
+const fontsUrl =
+  'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap';
 
 /**
  * Standalone page that renders the sync diff with `@pierre/diffs`. Files can be
  * marked as viewed, saved in the browser per sync PR (the merged branches)
  * until the file diff changes
  */
-export function renderSyncDiffHtml(result: SyncDiffResult): string {
+export function renderSyncDiffHtml(
+  result: SyncDiffResult,
+  { base }: { base?: SyncBaseDiff } = {},
+): string {
   const data = {
     head: result.head,
     strategy: result.strategy,
+    base:
+      base ?
+        {
+          leftLabel: base.label,
+          rightLabel: base.branchLabel,
+          compareTo: base.to,
+          conflictedFiles: [],
+          diff: base.diff,
+          contents: base.contents ?? null,
+          importOnlyFiles: getImportOnlyFiles(base.diff),
+        }
+      : null,
     sections: result.sections.map((section) => ({
       leftLabel: section.leftLabel,
       rightLabel: section.rightLabel,
@@ -42,12 +60,24 @@ export function renderSyncDiffHtml(result: SyncDiffResult): string {
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<title>Sync diff ${escapeHtml(result.head.slice(0, 12))}</title>`,
+    '<link rel="preconnect" href="https://fonts.googleapis.com">',
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
+    `<link rel="stylesheet" href="${fontsUrl}">`,
     `<style>${styles}</style>`,
+    '<style id="theme-chrome"></style>',
     '</head>',
     '<body>',
     '<header class="top">',
     '<div class="title">',
     '<strong>Sync diff</strong>',
+    ...(base ?
+      [
+        '<nav class="views">',
+        '<a href="#" data-view="sync">Sync changes</a>',
+        `<a href="#base" data-view="base">${escapeHtml(base.branchLabel)} vs ${escapeHtml(base.label)}</a>`,
+        '</nav>',
+      ]
+    : []),
     `<span class="muted">${escapeHtml(labels)} → <code>${escapeHtml(result.head.slice(0, 12))}</code></span>`,
     '</div>',
     '<div class="actions">',
@@ -60,6 +90,8 @@ export function renderSyncDiffHtml(result: SyncDiffResult): string {
     '<label id="imports" class="check"><input type="checkbox" id="hide-imports"> <span id="imports-label"></span></label>',
     '<button type="button" id="mode"></button>',
     '<button type="button" id="diff-style"></button>',
+    '<button type="button" id="wrap" title="Wrap long lines">Wrap</button>',
+    '<select id="theme" title="Theme"></select>',
     '</div>',
     '</header>',
     '<div class="layout">',
@@ -67,7 +99,7 @@ export function renderSyncDiffHtml(result: SyncDiffResult): string {
     '<main id="review"></main>',
     '</div>',
     `<script type="application/json" id="sync-diff-data">${serializeJson(data)}</script>`,
-    `<script type="module">import { CodeView, parsePatchFiles } from '${diffsModuleUrl}';\n${script}</script>`,
+    `<script type="module">import { CodeView, parsePatchFiles, resolveTheme } from '${diffsModuleUrl}';\nimport { colorUtils, normalizeThemeColors } from '${themingColorModuleUrl}';\n${script}</script>`,
     '</body>',
     '</html>',
     '',
@@ -104,28 +136,23 @@ function serializeJson(value: unknown) {
 }
 
 const styles = String.raw`
+/* github-dark-default chrome until the selected theme loads */
 :root {
-  color-scheme: light dark;
-  --bg: #ffffff;
-  --surface: #f6f8fa;
-  --border: #d0d7de;
-  --text: #1f2328;
-  --muted: #59636e;
-  --accent: #0969da;
-  --conflict: #9a6700;
-  --viewed: #1a7f37;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1117;
-    --surface: #151b23;
-    --border: #3d444d;
-    --text: #e6edf3;
-    --muted: #9198a1;
-    --accent: #4493f8;
-    --conflict: #d29922;
-    --viewed: #3fb950;
-  }
+  color-scheme: dark;
+  --bg: #010409;
+  --text: #e6edf3;
+  --muted: #7d8590;
+  --border: color-mix(in srgb, var(--text) 20%, transparent);
+  --border-opaque: color-mix(in srgb, var(--text) 22%, var(--bg));
+  --surface: color-mix(in srgb, var(--text) 7%, var(--bg));
+  --surface-hover: color-mix(in srgb, var(--text) 14%, var(--bg));
+  --surface-selected: color-mix(in srgb, var(--text) 20%, var(--bg));
+  --accent: #1f6feb;
+  --addition: #34d399;
+  --deletion: #fb7185;
+  --conflict: #d29922;
+  --diffs-font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  -webkit-font-smoothing: antialiased;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
@@ -134,18 +161,23 @@ body {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font: 13px/1.5 Geist, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-button {
+code { font-family: var(--diffs-font-family); font-size: 95%; font-weight: 500; letter-spacing: -0.025em; }
+button, select {
   font: inherit;
   color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 1px solid var(--border-opaque);
   border-radius: 6px;
   padding: 2px 10px;
   cursor: pointer;
 }
+select { background: var(--bg); }
+button:hover:not(:disabled), select:hover { background: var(--surface-hover); }
+button:disabled { opacity: 0.5; cursor: default; }
+button[aria-pressed='true'] { background: var(--surface-selected); }
+input[type='checkbox'] { accent-color: var(--accent); }
 .muted { color: var(--muted); }
 .top {
   display: flex;
@@ -153,18 +185,18 @@ button {
   gap: 8px 16px;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-opaque);
 }
 .title { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; min-width: 0; }
-.actions { display: flex; gap: 12px; align-items: center; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
 .layout { flex: 1; display: flex; min-height: 0; }
 #files {
   width: 300px;
   flex-shrink: 0;
   overflow: auto;
   padding: 8px 0;
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-opaque);
 }
 #review { flex: 1; min-width: 0; height: 100%; overflow: auto; }
 .section-title {
@@ -180,7 +212,7 @@ button {
   align-items: center;
   padding: 1px 12px 1px 4px;
 }
-.row:hover { background: var(--surface); }
+.row:hover { background: var(--surface-hover); }
 .row .name {
   flex: 1;
   min-width: 0;
@@ -192,6 +224,7 @@ button {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.row .name:hover { background: none; }
 .folder .name { color: var(--muted); }
 .row.viewed .name { color: var(--muted); text-decoration: line-through; }
 .caret {
@@ -202,8 +235,13 @@ button {
   color: var(--muted);
   font-size: 11px;
 }
+.caret:hover { background: none; }
 .hidden { display: none !important; }
-.row.current { background: var(--surface); box-shadow: inset 2px 0 var(--accent); }
+.views { display: inline-flex; border: 1px solid var(--border-opaque); border-radius: 6px; overflow: hidden; }
+.views a { padding: 2px 10px; color: var(--muted); text-decoration: none; }
+.views a:hover { background: var(--surface-hover); }
+.views a.active { background: var(--surface-selected); color: var(--text); }
+.row.current { background: var(--surface-selected); box-shadow: inset 2px 0 var(--accent); }
 .nav { display: inline-flex; gap: 6px; align-items: center; }
 .check { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; user-select: none; }
 .badge { font-size: 11px; color: var(--conflict); flex-shrink: 0; }
@@ -215,25 +253,40 @@ button {
   cursor: pointer;
   user-select: none;
 }
-.viewed-toggle:has(input:checked) { color: var(--viewed); }
+.viewed-toggle:has(input:checked) { color: var(--addition); }
 .summary { padding: 12px 16px 0; }
 .summary p { margin: 0 0 8px; }
 .empty { padding: 24px 16px; color: var(--muted); }
 @media (max-width: 720px) {
   .layout { flex-direction: column; }
-  #files { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--border); }
+  #files { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--border-opaque); }
 }
 `;
 
 const script = String.raw`
 const data = JSON.parse(document.getElementById('sync-diff-data').textContent);
-// keyed by the merged branches, so it is kept when the sync PR is updated
-const viewedKey = 'umbrella-prs:sync-diff-viewed:' + JSON.stringify(
+// the umbrella diff on top of the base after the sync, or the sync changes
+const baseView = location.hash === '#base' && data.base !== null;
+const sections = baseView ? [data.base] : data.sections;
+
+for (const link of document.querySelectorAll('.views a')) {
+  link.classList.toggle('active', link.dataset.view === (baseView ? 'base' : 'sync'));
+}
+
+window.addEventListener('hashchange', () => location.reload());
+const viewName = baseView ? 'base' : 'sync';
+// shared by both views and keyed by the merged branches, so it is kept when
+// the sync PR is updated
+const viewedKey = 'umbrella-prs:sync-diff-viewed-files:' + JSON.stringify(
   data.sections.map((section) => [section.leftLabel, section.rightLabel]),
 );
 const styleKey = 'umbrella-prs:sync-diff-style';
 const modeKey = 'umbrella-prs:sync-diff-mode';
+// the selected file, kept across modes and views
+const currentKey = 'umbrella-prs:sync-diff-current:' + data.head;
 const importsKey = 'umbrella-prs:sync-diff-hide-imports';
+const wrapKey = 'umbrella-prs:sync-diff-wrap';
+const themeKey = 'umbrella-prs:sync-diff-theme';
 
 function readStorage(key, fallback) {
   try {
@@ -268,19 +321,34 @@ function el(tag, props, children) {
   return node;
 }
 
-// viewed files, by id, with the hash of their diff so changed files show up again
+// viewed files by path, with the hash of their diff in each view, so files
+// whose diff changed show up again
 const viewed = readStorage(viewedKey, {});
 let diffStyle = readStorage(styleKey, 'split');
 // 'all' shows every file, 'single' one file at a time
 let mode = readStorage(modeKey, 'all');
 let hideImportOnly = readStorage(importsKey, false);
+let wrap = readStorage(wrapKey, false);
+const themes = [
+  { id: 'github-dark-default', label: 'GitHub Dark' },
+  { id: 'github-light-default', label: 'GitHub Light' },
+  { id: 'github-system', label: 'GitHub (system)', light: 'github-light-default', dark: 'github-dark-default' },
+  { id: 'pierre-dark-soft', label: 'Pierre Dark Soft' },
+  { id: 'pierre-light-soft', label: 'Pierre Light Soft' },
+  { id: 'pierre-soft-system', label: 'Pierre Soft (system)', light: 'pierre-light-soft', dark: 'pierre-dark-soft' },
+  { id: 'pierre-dark', label: 'Pierre Dark' },
+  { id: 'pierre-light', label: 'Pierre Light' },
+];
+let theme = themes.find((option) => option.id === readStorage(themeKey, null)) ?? themes[0];
+// light or dark, by theme name, known once the theme loads
+const themeTypes = new Map();
 let current = null;
-const multipleSections = data.sections.length > 1;
+const multipleSections = sections.length > 1;
 
 const entries = [];
 const entriesByDiff = new Map();
 
-data.sections.forEach((section, sectionIndex) => {
+sections.forEach((section, sectionIndex) => {
   if (!section.diff) return;
 
   const patches = parsePatchFiles(section.diff + '\n', 'section-' + sectionIndex);
@@ -290,7 +358,6 @@ data.sections.forEach((section, sectionIndex) => {
       id: sectionIndex + ':' + fileDiff.name,
       section,
       fileDiff,
-      hash: hash(fileDiff.deletionLines.join('\n') + '\0' + fileDiff.additionLines.join('\n')),
       conflicted: section.conflictedFiles.includes(fileDiff.name),
       importOnly: section.importOnlyFiles.includes(fileDiff.name),
       toggles: [],
@@ -303,8 +370,38 @@ data.sections.forEach((section, sectionIndex) => {
 
 const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
 
+function hashFileDiff(fileDiff) {
+  return hash(fileDiff.deletionLines.join('\n') + '\0' + fileDiff.additionLines.join('\n'));
+}
+
+/** Hash of the diff of each file, by path */
+function hashFiles(fileDiffs) {
+  const hashes = new Map();
+  for (const fileDiff of fileDiffs) {
+    hashes.set(fileDiff.name, (hashes.get(fileDiff.name) ?? '') + hashFileDiff(fileDiff));
+  }
+  return hashes;
+}
+
+function parseViewFiles(viewSections, prefix) {
+  return viewSections.flatMap((section, index) =>
+    section.diff
+      ? parsePatchFiles(section.diff + '\n', prefix + index).flatMap((patch) => patch.files)
+      : [],
+  );
+}
+
+// the hashes of the other view too, so marking a file marks it in both
+const viewHashes = {
+  [viewName]: hashFiles(entries.map((entry) => entry.fileDiff)),
+};
+
+if (baseView) viewHashes.sync = hashFiles(parseViewFiles(data.sections, 'hash-sync-'));
+else if (data.base) viewHashes.base = hashFiles(parseViewFiles([data.base], 'hash-base-'));
+
 function isViewed(entry) {
-  return viewed[entry.id] === entry.hash;
+  const name = entry.fileDiff.name;
+  return viewed[name]?.[viewName] === viewHashes[viewName].get(name);
 }
 
 function createToggle(entry) {
@@ -332,8 +429,13 @@ function updateProgress() {
 
 function setViewed(targets, value) {
   for (const entry of targets) {
-    if (value) viewed[entry.id] = entry.hash;
-    else delete viewed[entry.id];
+    const name = entry.fileDiff.name;
+
+    if (value) {
+      viewed[name] = { sync: viewHashes.sync?.get(name), base: viewHashes.base?.get(name) };
+    } else {
+      delete viewed[name];
+    }
 
     for (const toggle of entry.toggles) toggle.checked = value;
     entry.row?.classList.toggle('viewed', value);
@@ -342,7 +444,7 @@ function setViewed(targets, value) {
   writeStorage(viewedKey, viewed);
 
   if (mode === 'single') {
-    if (value && current && targets.includes(current)) current = nextUnviewed(current);
+    if (value && current && targets.includes(current)) setCurrent(nextUnviewed(current));
     render();
     return;
   }
@@ -366,13 +468,33 @@ function nextUnviewed(entry) {
   return ordered.find((item) => !isViewed(item)) ?? entry;
 }
 
+function setCurrent(entry) {
+  if (entry === current) return;
+
+  current?.row?.classList.remove('current');
+  current = entry;
+  current?.row?.classList.add('current');
+  writeStorage(currentKey, entry?.fileDiff.name ?? null);
+}
+
 function select(entry) {
-  if (mode === 'single') {
-    current = entry;
-    render();
-  } else {
-    viewer.scrollTo({ type: 'item', id: entry.id, align: 'start' });
+  setCurrent(entry);
+
+  if (mode === 'single') render();
+  else viewer.scrollTo({ type: 'item', id: entry.id, align: 'start' });
+}
+
+// the file at the top of the scroll position in the all files mode
+function topEntry() {
+  let top = null;
+
+  for (const entry of visibleEntries()) {
+    const itemTop = viewer.getTopForItem(entry.id);
+    if (itemTop === undefined || itemTop > root.scrollTop + 1) break;
+    top = entry;
   }
+
+  return top;
 }
 
 function move(offset) {
@@ -496,7 +618,7 @@ function renderTree(node, depth) {
 function renderSidebar() {
   const aside = document.getElementById('files');
 
-  for (const section of data.sections) {
+  for (const section of sections) {
     const sectionEntries = entries.filter((entry) => entry.section === section);
 
     if (multipleSections) {
@@ -521,7 +643,19 @@ const emptyNote = el('p', { className: 'empty hidden' });
 function renderSummary() {
   const summary = el('div', { className: 'summary' });
 
-  for (const section of data.sections) {
+  if (baseView) {
+    summary.append(
+      el('p', {
+        textContent: 'The files changed by the sync compared with ' + data.base.leftLabel +
+          ', as the ' + data.base.rightLabel + ' PR shows them once the sync PR is merged. ' + entries.length + ' files.',
+      }),
+      emptyNote,
+    );
+
+    return summary;
+  }
+
+  for (const section of sections) {
     const conflictCount = section.conflictedFiles.length;
     const conflicts = conflictCount === 0 ? 'No conflicts.'
       : conflictCount === 1 ? '1 conflicted file.'
@@ -563,11 +697,13 @@ const summary = renderSummary();
 
 function viewerOptions() {
   return {
-    theme: { light: 'pierre-light', dark: 'pierre-dark' },
-    themeType: 'system',
+    theme: theme.light ? { light: theme.light, dark: theme.dark } : theme.id,
+    themeType: theme.light ? 'system' : themeTypes.get(theme.id) ?? 'dark',
+    overflow: wrap ? 'wrap' : 'scroll',
     diffStyle,
     stickyHeaders: true,
-    loadDiffFiles,
+    // without contents, e.g. the base diff, unchanged lines can't be expanded
+    loadDiffFiles: sections.some((section) => section.contents) ? loadDiffFiles : undefined,
     renderCodeViewHeader: () => summary,
     renderHeaderPrefix: multipleSections
       ? (fileDiff) => {
@@ -606,12 +742,12 @@ function render() {
   const visible = visibleEntries();
 
   if (mode === 'single' && (!current || !isVisible(current))) {
-    current = visible.find((entry) => !isViewed(entry)) ?? visible[0] ?? null;
+    setCurrent(visible.find((entry) => !isViewed(entry)) ?? visible[0] ?? null);
   }
 
   for (const entry of entries) {
     entry.row?.classList.toggle('hidden', !isVisible(entry));
-    entry.row?.classList.toggle('current', mode === 'single' && entry === current);
+    entry.row?.classList.toggle('current', entry === current);
   }
 
   const items = mode === 'single' ? (current ? [current] : []) : visible;
@@ -626,10 +762,11 @@ function render() {
   })));
 
   if (mode === 'single') root.scrollTop = 0;
+  else if (current && isVisible(current)) scrollToCurrent();
 
-  emptyNote.textContent = entries.length === 0
-    ? 'The PR matches the automatic merge, there are no conflict resolutions or manual edits.'
-    : 'All the changes are import-only.';
+  emptyNote.textContent = entries.length > 0 ? 'All the changes are import-only.'
+    : baseView ? 'There are no changes on top of ' + data.base.leftLabel + '.'
+    : 'The PR matches the automatic merge, there are no conflict resolutions or manual edits.';
   emptyNote.classList.toggle('hidden', visible.length > 0);
 
   const index = visible.indexOf(current);
@@ -641,16 +778,97 @@ function render() {
   modeButton.textContent = mode === 'single' ? 'All files' : 'One file';
   modeButton.title = mode === 'single' ? 'Show all the files' : 'Review one file at a time';
   styleButton.textContent = diffStyle === 'split' ? 'Unified' : 'Split';
+  wrapButton.setAttribute('aria-pressed', String(wrap));
 
   updateProgress();
   updateFolders();
 }
+
+// page colors derived from the theme like diffshub.com does
+const chromeStyle = document.getElementById('theme-chrome');
+const themeSelect = document.getElementById('theme');
+const wrapButton = document.getElementById('wrap');
+
+for (const option of themes) {
+  themeSelect.append(el('option', { value: option.id, textContent: option.label }));
+}
+
+function chromeVars(resolved) {
+  const colors = resolved.colors ?? {};
+  const surfaces = normalizeThemeColors(resolved).colors ?? {};
+  const bg = surfaces['sideBar.background'] ?? surfaces['editor.background'] ?? resolved.bg;
+  const fg = colorUtils.pickReadableForeground(bg, [colors['sideBar.foreground'], colors['editor.foreground'], resolved.fg]) ?? resolved.fg;
+  const description = colors['descriptionForeground'];
+  const descriptionLuminance = description ? colorUtils.relativeLuminance(colorUtils.compositeOverBg(description, bg) ?? description) : null;
+  const bgLuminance = colorUtils.relativeLuminance(bg);
+  const muted = description && (descriptionLuminance === null || bgLuminance === null || colorUtils.contrastRatio(bgLuminance, descriptionLuminance) >= 4.5)
+    ? description
+    : colorUtils.deriveMutedFg(fg, bg);
+  const dark = colorUtils.isDarkSurface(bg, fg);
+
+  return [
+    'color-scheme: ' + (dark ? 'dark' : 'light'),
+    '--bg: ' + bg,
+    '--text: ' + fg,
+    '--muted: ' + muted,
+    '--accent: ' + (colors['focusBorder'] ?? colors['textLink.foreground'] ?? fg),
+    '--addition: ' + (dark ? '#34d399' : '#047857'),
+    '--deletion: ' + (dark ? '#fb7185' : '#be123c'),
+    '--conflict: ' + (colors['editorWarning.foreground'] ?? (dark ? '#d29922' : '#9a6700')),
+  ].join('; ');
+}
+
+async function applyTheme() {
+  const names = theme.light ? [theme.light, theme.dark] : [theme.id];
+  const resolved = await Promise.all(names.map((name) => resolveTheme(name)));
+  for (const [index, name] of names.entries()) themeTypes.set(name, resolved[index].type);
+
+  const [light, dark] = resolved.map(chromeVars);
+  chromeStyle.textContent = theme.light
+    ? ':root { ' + light + ' } @media (prefers-color-scheme: dark) { :root { ' + dark + ' } }'
+    : ':root { ' + light + ' }';
+  viewer.setOptions(viewerOptions());
+}
+
+themeSelect.value = theme.id;
+themeSelect.addEventListener('change', () => {
+  theme = themes.find((option) => option.id === themeSelect.value) ?? themes[0];
+  writeStorage(themeKey, theme.id);
+  void applyTheme();
+});
+
+wrapButton.addEventListener('click', () => {
+  wrap = !wrap;
+  writeStorage(wrapKey, wrap);
+  viewer.setOptions(viewerOptions());
+  render();
+});
 
 styleButton.addEventListener('click', () => {
   diffStyle = diffStyle === 'split' ? 'unified' : 'split';
   writeStorage(styleKey, diffStyle);
   viewer.setOptions(viewerOptions());
   render();
+});
+
+function scrollToCurrent() {
+  const target = current;
+  // after CodeView lays out the new items
+  requestAnimationFrame(() => {
+    if (target === current) viewer.scrollTo({ type: 'item', id: target.id, align: 'start' });
+  });
+}
+
+let scrollFrame = 0;
+
+root.addEventListener('scroll', () => {
+  if (mode !== 'all') return;
+
+  cancelAnimationFrame(scrollFrame);
+  scrollFrame = requestAnimationFrame(() => {
+    const top = topEntry();
+    if (top) setCurrent(top);
+  });
 });
 
 modeButton.addEventListener('click', () => {
@@ -682,6 +900,11 @@ document.addEventListener('keydown', (event) => {
 });
 
 renderSidebar();
+
+const savedName = readStorage(currentKey, null);
+setCurrent(entries.find((entry) => entry.fileDiff.name === savedName) ?? null);
+
 viewer.setup(root);
 render();
+void applyTheme();
 `;

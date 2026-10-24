@@ -110,8 +110,10 @@ The comment always starts with the command that opens the diff in the browser, e
 
 - A file tree with folders. Files and whole folders can be marked as viewed. Viewed files are collapsed and saved in the browser per sync PR (its merged branches) until their diff changes.
 - One file at a time mode, with `n`/`p` to move and `v` to mark as viewed and go to the next unviewed file.
-- A toggle that hides import-only changes.
-- Expandable unchanged lines, split and unified layouts.
+- A toggle that hides import-only changes. Conflict markers and multi-line import list items around imports count as import changes.
+- A second view, `<umbrella> vs <base>`, with the files changed by the sync as the umbrella PR shows them once the sync PR is merged: the merged base commit compared with the PR head.
+- Expandable unchanged lines, split and unified layouts, and line wrapping.
+- A theme switcher (GitHub Dark by default, GitHub Light and the Pierre themes from [diffshub.com](https://diffshub.com), fixed or following the system). The page colors are derived from the theme.
 
 `diff sync` takes a branch, a commit or a PR (`123`, `#123` or its URL). For a merged PR, the base from before the merge is used.
 

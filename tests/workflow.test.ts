@@ -364,6 +364,49 @@ describe('sync diff', () => {
     expect(html.match(/<\/script>/g)).toHaveLength(2);
   });
 
+  test('includes the umbrella diff on top of the merged base', async () => {
+    const u = await createConflictedSync();
+
+    // an umbrella change the sync doesn't touch
+    repo.git('checkout', '--quiet', 'feature/umbrella/billing');
+    repo.commit('untouched', { 'other.ts': 'other\n' });
+    repo.git('push', '--quiet');
+    repo.git('checkout', '--quiet', 'under/billing/sync');
+    repo.git(
+      'merge',
+      '--quiet',
+      '--no-ff',
+      '--no-edit',
+      'feature/umbrella/billing',
+    );
+    repo.git('push', '--quiet');
+
+    const result = unwrap(
+      await u.syncDiff({
+        mode: 'local',
+        includeBaseDiff: true,
+        includeContents: true,
+      }),
+    );
+
+    expect(result.base).toMatchObject({
+      label: 'beta',
+      branchLabel: 'feature/umbrella/billing',
+      from: result.sections[0]?.right,
+      to: result.head,
+    });
+    // the umbrella change kept in the conflict and the manual edit
+    expect(result.base?.diff).toContain('+umbrella');
+    expect(result.base?.diff).toContain('+edited');
+
+    expect(result.base?.diff).not.toContain('other.ts');
+    expect(result.base?.contents?.after['README.md']).toBe('edited\n');
+
+    const html = renderSyncDiffHtml(result, { base: result.base });
+
+    expect(html).toContain('feature/umbrella/billing vs beta');
+  });
+
   test('shows the diff of a merged sync PR by number', async () => {
     await createConflictedSync();
 

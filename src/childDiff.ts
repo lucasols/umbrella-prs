@@ -5,6 +5,11 @@ const hunkHeaderRegex = /^(@+) /;
 const changeMarkerRegex = /[+-]/;
 const importBracesRegex = /^import\s*{/;
 const exportBracesRegex = /^export\s*{/;
+const importBlockStartRegex =
+  /^(?:import|export)\s+(?:type\s+)?(?:[\w$]+\s*,\s*)?{$/;
+const importBlockEndRegex = /^}\s*from\s/;
+const importListItemRegex = /^(?:type\s+)?[\w$]+(?:\s+as\s+[\w$]+)?,?$/;
+const conflictMarkerRegex = /^(?:<{7}|={7}|>{7}|\|{7})(?: |$)/;
 
 export function toPathspec({
   include = [],
@@ -90,6 +95,12 @@ export function removeImportOnlyChanges(diff: string): string {
 }
 
 /** Whether all changed lines of a file section are imports/exports */
+type SideLine = { content: string; changed: boolean } | null;
+
+/**
+ * Whether all changed lines of a file section are imports/exports. Items of
+ * multi-line import lists and conflict markers around imports count as imports
+ */
 export function isImportOnlyChange(fileDiff: string): boolean {
   const lines = fileDiff.split('\n');
 
@@ -106,17 +117,110 @@ export function isImportOnlyChange(fileDiff: string): boolean {
     }
   }
 
-  const changedLines = lines.filter((line) => {
-    if (line.startsWith('+++') || line.startsWith('---')) return false;
+  // the old and new versions of the hunks, `null` separates hunks
+  const oldSide: SideLine[] = [];
+  const newSide: SideLine[] = [];
+  let inHunk = false;
 
-    return changeMarkerRegex.test(line.slice(0, prefixLength));
-  });
+  for (const line of lines) {
+    if (hunkHeaderRegex.test(line)) {
+      inHunk = true;
+      oldSide.push(null);
+      newSide.push(null);
+      continue;
+    }
 
-  if (changedLines.length === 0) return false;
+    if (!inHunk || line.startsWith('\\')) continue;
 
-  return changedLines.every((line) =>
-    isImportOrExportLine(line.slice(prefixLength).trim()),
-  );
+    const prefix = line.slice(0, prefixLength);
+    const content = line.slice(prefixLength).trim();
+    const changed = changeMarkerRegex.test(prefix);
+
+    if (!prefix.includes('+')) oldSide.push({ content, changed });
+    if (!prefix.includes('-')) newSide.push({ content, changed });
+  }
+
+  let hasChanges = false;
+
+  for (const side of [oldSide, newSide]) {
+    for (const [index, line] of side.entries()) {
+      if (!line?.changed) continue;
+
+      hasChanges = true;
+
+      if (!isImportLine(side, index)) return false;
+    }
+  }
+
+  return hasChanges;
+}
+
+function isImportLine(side: SideLine[], index: number): boolean {
+  const content = side[index]?.content ?? '';
+
+  if (isImportOrExportLine(content)) return true;
+
+  if (conflictMarkerRegex.test(content)) {
+    return isImportConflictMarker(side, index, content);
+  }
+
+  return importListItemRegex.test(content) && isInImportBlock(side, index);
+}
+
+/** Whether the lines of the conflict sides around the marker are all imports */
+function isImportConflictMarker(
+  side: SideLine[],
+  index: number,
+  marker: string,
+): boolean {
+  const steps =
+    marker.startsWith('<') ? [1]
+    : marker.startsWith('>') ? [-1]
+    : [-1, 1];
+
+  for (const step of steps) {
+    for (
+      let current = index + step;
+      current >= 0 && current < side.length;
+      current += step
+    ) {
+      const line = side[current];
+
+      if (!line || conflictMarkerRegex.test(line.content)) break;
+
+      if (!isImportLine(side, current)) return false;
+    }
+  }
+
+  return true;
+}
+
+/** Whether the line is between `import {` and `} from`, within its hunk */
+function isInImportBlock(side: SideLine[], index: number): boolean {
+  for (const step of [-1, 1]) {
+    for (
+      let current = index + step;
+      current >= 0 && current < side.length;
+      current += step
+    ) {
+      const line = side[current];
+
+      if (!line) break;
+
+      const boundary = step < 0 ? importBlockStartRegex : importBlockEndRegex;
+
+      if (boundary.test(line.content)) return true;
+
+      const isListLine =
+        !line.content ||
+        importListItemRegex.test(line.content) ||
+        conflictMarkerRegex.test(line.content);
+
+      if (!isListLine) break;
+    }
+  }
+
+  return false;
 }
 
 function isImportOrExportLine(content: string): boolean {

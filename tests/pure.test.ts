@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import { getAutoApproveEligibility } from '../src/autoApprove';
-import { getDiffFilePath, removeImportOnlyChanges } from '../src/childDiff';
+import {
+  getDiffFilePath,
+  isImportOnlyChange,
+  removeImportOnlyChanges,
+} from '../src/childDiff';
 import { renderSyncDiffComment, type SyncDiffResult } from '../src/syncDiff';
 import { parseConfig, resolveConfig } from '../src/config';
 import { getDependencyChain, resolveCurrentBase } from '../src/dependency';
@@ -560,6 +564,88 @@ describe('misc', () => {
         '',
       ].join('\n'),
     );
+  });
+
+  test('treats import list items and conflict markers in imports as import-only', () => {
+    const conflictInImports = [
+      'diff --git a/cli.ts b/cli.ts',
+      '--- a/cli.ts',
+      '+++ b/cli.ts',
+      '@@ -14,11 +14,8 @@',
+      " } from './createBranch';",
+      " import { goToBranchCmd } from './goToBranch';",
+      ' import {',
+      '-<<<<<<< feature/stacked/remove-deprecations',
+      '   runUmbrellaPrsCli,',
+      '-=======',
+      '   resumePreprodUpdate,',
+      '->>>>>>> beta',
+      '   updatePRBody,',
+      '   updatePreprod,',
+      " } from './utils';",
+    ].join('\n');
+
+    expect(isImportOnlyChange(conflictInImports)).toBe(true);
+
+    const conflictBetweenImports = [
+      'diff --git a/a.test.ts b/a.test.ts',
+      '--- a/a.test.ts',
+      '+++ b/a.test.ts',
+      '@@ -1,10 +1,6 @@',
+      " import { parseMarkdown } from './parseMarkdown';",
+      '-<<<<<<< feature/stacked/remove-deprecations',
+      " import { dedent } from '@ls-stack/utils/dedent';",
+      '-=======',
+      "-import { dedent } from '#utils/dedent';",
+      " import { marked } from 'marked';",
+      '->>>>>>> beta',
+      " import { describe, expect, test, vi } from 'vitest';",
+      ' ',
+      ' function parseMD(html: string) {',
+    ].join('\n');
+
+    expect(isImportOnlyChange(conflictBetweenImports)).toBe(true);
+
+    const changedListItem = [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1,4 +1,4 @@',
+      ' import {',
+      '-  oldName,',
+      '+  newName as other,',
+      '   type Kept,',
+      " } from './a';",
+    ].join('\n');
+
+    expect(isImportOnlyChange(changedListItem)).toBe(true);
+
+    const objectLiteral = [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1,4 +1,4 @@',
+      ' export const config = {',
+      '-  oldName,',
+      '+  newName,',
+      ' };',
+    ].join('\n');
+
+    expect(isImportOnlyChange(objectLiteral)).toBe(false);
+
+    const conflictInCode = [
+      'diff --git a/a.ts b/a.ts',
+      '--- a/a.ts',
+      '+++ b/a.ts',
+      '@@ -1,5 +1,1 @@',
+      '-<<<<<<< ours',
+      '-const a = 1;',
+      '-=======',
+      ' const a = 2;',
+      '->>>>>>> theirs',
+    ].join('\n');
+
+    expect(isImportOnlyChange(conflictInCode)).toBe(false);
   });
 
   test('reads the path of a file diff', () => {

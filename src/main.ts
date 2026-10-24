@@ -60,6 +60,8 @@ export { err, ok, type Err, type Ok, type Result } from './result';
 export {
   parseMergedBranch,
   renderSyncDiffComment,
+  type SyncBaseDiff,
+  type SyncDiffContents,
   type SyncDiffMode,
   type SyncDiffResult,
   type SyncDiffSection,

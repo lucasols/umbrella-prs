@@ -632,6 +632,7 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
       right: getString(ctx, 'right'),
       exclude: getStrings(ctx, 'exclude'),
       includeContents: html,
+      includeBaseDiff: html,
     }),
   );
 
@@ -647,7 +648,7 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
         );
 
     mkdirSync(path.dirname(filePath), { recursive: true });
-    writeFileSync(filePath, renderSyncDiffHtml(result));
+    writeFileSync(filePath, renderSyncDiffHtml(result, { base: result.base }));
 
     if (!getBoolean(ctx, 'no-open')) await ctx.openFile(filePath);
 
