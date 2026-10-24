@@ -1,6 +1,6 @@
 {
   "name": "@ls-stack/umbrella-prs",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Umbrella PR branch workflow: a long-lived umbrella branch with child PRs targeting it, as a library and CLI",
   "license": "MIT",
   "type": "module",
