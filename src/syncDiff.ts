@@ -81,6 +81,8 @@ export type GetSyncDiffOptions = {
   defaultExclude?: readonly string[];
   /** Includes the contents of the changed files */
   includeContents?: boolean;
+  /** Runs the CLI in the `reviewCommand`, e.g. `pnpm exec umbrella-prs` */
+  cliCommand?: string;
   git: Git;
   github: GitHub;
   /** Max first-parent commits walked looking for merges */
@@ -99,6 +101,7 @@ export async function getSyncDiff({
   exclude,
   defaultExclude = [],
   includeContents = false,
+  cliCommand = 'umbrella-prs',
   git,
   github,
   maxCommits = 100,
@@ -129,7 +132,7 @@ export async function getSyncDiff({
   const leftRef = await resolveRef(git, left);
   const headSha = await git.revParse(head);
 
-  const reviewCommand = formatCommand('umbrella-prs', [
+  const reviewCommand = formatCommand(cliCommand, [
     'diff',
     'sync',
     ...(pr !== undefined ? [String(pr)] : [headSha, '--left', left]),

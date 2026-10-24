@@ -126,6 +126,8 @@ export type CreateUmbrellaPrsOptions = {
   cwd?: string;
   /** Runs `git` and `gh`, replaceable in tests */
   exec?: Exec;
+  /** Runs the CLI in the commands shown to users, defaults to `umbrella-prs` */
+  cliCommand?: string;
 };
 
 export type UmbrellaPrs = ReturnType<typeof createUmbrellaPrs>;
@@ -135,6 +137,7 @@ export function createUmbrellaPrs({
   hooks = {},
   cwd,
   exec = defaultExec,
+  cliCommand,
 }: CreateUmbrellaPrsOptions) {
   const resolvedConfig = resolveConfig(configInput);
 
@@ -1170,6 +1173,7 @@ export function createUmbrellaPrs({
         exclude: options.exclude ?? [],
         defaultExclude: config.diff.exclude,
         includeContents: options.includeContents,
+        cliCommand,
         git,
         github,
       });

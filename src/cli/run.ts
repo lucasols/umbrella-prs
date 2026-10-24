@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadConfig } from './loadConfig';
+import { detectCliCommand } from './packageManager';
 import {
   createReadlinePrompter,
   PromptCancelledError,
@@ -1632,6 +1633,7 @@ export async function runCli(io: CliIo): Promise<number> {
         config: config.value.config,
         cwd,
         exec: io.exec ?? defaultExec,
+        cliCommand: detectCliCommand({ cwd, env: io.env }),
         hooks: { log: json ? () => {} : log },
       });
 
