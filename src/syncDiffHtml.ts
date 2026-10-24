@@ -11,6 +11,8 @@ import type {
 
 const diffsModuleUrl = 'https://esm.sh/@pierre/diffs@1.6.1';
 const themingColorModuleUrl = 'https://esm.sh/@pierre/theming@1.0.2/color';
+const treesModuleUrl =
+  'https://esm.sh/@pierre/trees@1.0.0-beta.6?exports=createFileTreeIconResolver,getBuiltInSpriteSheet';
 const fontsUrl =
   'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap';
 
@@ -192,10 +194,11 @@ function renderViewerHtml({
     '<link rel="preconnect" href="https://fonts.googleapis.com">',
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
     `<link rel="stylesheet" href="${fontsUrl}">`,
-    `<style>${styles}</style>`,
+    `<style>${styles}${iconStyles}</style>`,
     '<style id="theme-chrome"></style>',
     '</head>',
     '<body>',
+    customIconSprite,
     '<header class="top">',
     '<div class="title">',
     `<strong>${escapeHtml(heading)}</strong>`,
@@ -230,7 +233,7 @@ function renderViewerHtml({
     '<main id="review"></main>',
     '</div>',
     `<script type="application/json" id="sync-diff-data">${serializeJson(data)}</script>`,
-    `<script type="module">import { CodeView, parsePatchFiles, resolveTheme } from '${diffsModuleUrl}';\nimport { colorUtils, normalizeThemeColors } from '${themingColorModuleUrl}';\n${script}</script>`,
+    `<script type="module">import { CodeView, parsePatchFiles, resolveTheme } from '${diffsModuleUrl}';\nimport { colorUtils, normalizeThemeColors } from '${themingColorModuleUrl}';\nimport { createFileTreeIconResolver, getBuiltInSpriteSheet } from '${treesModuleUrl}';\n${script}</script>`,
     '</body>',
     '</html>',
     '',
@@ -265,6 +268,83 @@ function serializeJson(value: unknown) {
     .replaceAll('\u2028', '\\u2028')
     .replaceAll('\u2029', '\\u2029');
 }
+
+/** File icon colors of `@pierre/trees`, by the icon tokens that use them */
+const iconColors: { light: string; dark: string; tokens: string[] }[] = [
+  {
+    light: '#1a85d4',
+    dark: '#69b1ff',
+    tokens: [
+      'biome',
+      'c',
+      'cpp',
+      'docker',
+      'python',
+      'typescript',
+      'vscode',
+      'webpack',
+    ],
+  },
+  {
+    light: '#1ca1c7',
+    dark: '#68cdf2',
+    tokens: ['go', 'oxc', 'react', 'tailwind'],
+  },
+  {
+    light: '#199f43',
+    dark: '#5ecc71',
+    tokens: ['bash', 'markdown', 'svgo', 'vue', 'test'],
+  },
+  {
+    light: '#693acf',
+    dark: '#9d6afb',
+    tokens: ['bootstrap', 'css', 'eslint', 'terraform', 'wasm'],
+  },
+  { light: '#594c5b', dark: '#79697b', tokens: ['bun'] },
+  {
+    light: '#d47628',
+    dark: '#ffa359',
+    tokens: ['claude', 'html', 'json', 'rust', 'svg', 'swift', 'zig', 'zip'],
+  },
+  {
+    light: '#d32a61',
+    dark: '#ff678d',
+    tokens: ['graphql', 'image', 'sass', 'stories'],
+  },
+  { light: '#a631be', dark: '#d568ea', tokens: ['astro', 'database', 'vite'] },
+  {
+    light: '#d52c36',
+    dark: '#ff6762',
+    tokens: ['npm', 'postcss', 'ruby', 'svelte', 'yml'],
+  },
+  { light: '#17a5af', dark: '#64d1db', tokens: ['mcp', 'prettier', 'table'] },
+  {
+    light: '#d5a910',
+    dark: '#ffd452',
+    tokens: ['babel', 'browserslist', 'javascript'],
+  },
+  { light: '#d5512f', dark: '#ff8c5b', tokens: ['git'] },
+];
+
+const iconStyles = iconColors
+  .map(
+    ({ light, dark, tokens }) =>
+      `${tokens.map((token) => `.icon[data-icon-token='${token}']`).join(', ')} { color: light-dark(${light}, ${dark}); }`,
+  )
+  .join('\n');
+
+/** Icons of test and stories files, which the built-in icons don't tell apart */
+const customIconSprite = [
+  '<svg aria-hidden="true" width="0" height="0" style="position: absolute">',
+  '<symbol id="umbrella-icon-test" viewBox="0 0 16 16">',
+  '<path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M5.5 1.75h5M6.5 1.75v4.5L2.9 12.4a1.2 1.2 0 0 0 1 1.85h8.2a1.2 1.2 0 0 0 1-1.85L9.5 6.25v-4.5"/>',
+  '<path fill="currentColor" d="M4.7 9.25h6.6l1.75 3.05a.8.8 0 0 1-.7 1.2H3.65a.8.8 0 0 1-.7-1.2z"/>',
+  '</symbol>',
+  '<symbol id="umbrella-icon-stories" viewBox="0 0 16 16">',
+  '<path fill="currentColor" fill-rule="evenodd" d="M3 2.6c0-.6.45-1.1 1.05-1.1L12.3 1c.4 0 .7.3.7.7v12.6c0 .4-.3.7-.7.7l-8.2-.4A1.15 1.15 0 0 1 3 13.45zM10 1.5v3l-.9-.7-.9.7v-3z"/>',
+  '</symbol>',
+  '</svg>',
+].join('');
 
 const styles = String.raw`
 /* github-dark-default chrome until the selected theme loads */
@@ -384,6 +464,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .row .name:hover { background: none; }
 .folder .name { color: var(--muted); }
 .row.viewed .name { color: var(--muted); text-decoration: line-through; }
+.row .icon { width: 14px; height: 14px; flex-shrink: 0; color: var(--muted); }
+.row.viewed .icon { opacity: 0.5; }
 .caret {
   width: 14px;
   padding: 0;
@@ -587,6 +669,27 @@ else if (data.base) viewHashes.base = hashFiles(parseViewFiles([data.base], 'has
 function isViewed(entry) {
   const name = entry.fileDiff.name;
   return viewed[name]?.[viewName] === viewHashes[viewName].get(name);
+}
+
+const iconResolver = createFileTreeIconResolver({ set: 'complete', colored: true });
+document.body.insertAdjacentHTML('afterbegin', getBuiltInSpriteSheet('complete'));
+const testFileRegex = /\.(test|spec)\.[^/]+$/i;
+const storiesFileRegex = /\.(stories|story)\.[^/]+$/i;
+const svgNamespace = 'http://www.w3.org/2000/svg';
+
+function fileIcon(path) {
+  const icon = testFileRegex.test(path) ? { name: 'umbrella-icon-test', token: 'test' }
+    : storiesFileRegex.test(path) ? { name: 'umbrella-icon-stories', token: 'stories' }
+    : iconResolver.resolveIcon('file-tree-icon-file', path);
+  const svg = document.createElementNS(svgNamespace, 'svg');
+  svg.setAttribute('class', 'icon');
+  svg.setAttribute('viewBox', icon.viewBox ?? '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  if (icon.token) svg.dataset.iconToken = icon.token;
+  const use = document.createElementNS(svgNamespace, 'use');
+  use.setAttribute('href', '#' + icon.name);
+  svg.append(use);
+  return svg;
 }
 
 function createToggle(entry) {
@@ -929,6 +1032,7 @@ function renderTree(node, depth) {
 
     entry.row = el('div', { className: 'row file' + (isViewed(entry) ? ' viewed' : '') }, [
       el('label', { className: 'hit', title: 'Mark as viewed' }, [createToggle(entry)]),
+      fileIcon(entry.fileDiff.name),
       name,
       ...(entry.conflicted ? [el('span', { className: 'badge', textContent: 'conflict' })] : []),
       ...(entry.importOnly ? [el('span', { className: 'badge muted', textContent: 'imports' })] : []),
