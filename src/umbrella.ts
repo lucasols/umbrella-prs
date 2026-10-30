@@ -66,6 +66,7 @@ export type OpErrorCode =
   | 'from-current-not-in-umbrella'
   | 'unknown-type'
   | 'parent-pr-not-found'
+  | 'pr-not-found'
   | 'invalid-dependency'
   | 'merge-conflicts'
   | 'no-merges-found'
@@ -1262,6 +1263,97 @@ export function createUmbrellaPrs({
     });
   }
 
+  /**
+   * Diff of any PR as GitHub shows it, the PR head against the merge base with
+   * its base. Defaults to the open PR of the current branch
+   */
+  async function prDiff({
+    pr,
+    branch,
+    include,
+    exclude = [],
+    ignoreImportOnly = false,
+  }: {
+    pr?: number;
+    /** Branch whose open PR is used, defaults to the current branch */
+    branch?: string;
+    include?: string[];
+    exclude?: string[];
+    ignoreImportOnly?: boolean;
+  } = {}): Promise<
+    OpResult<{
+      diff: string;
+      files: string[];
+      pr: number;
+      base: string;
+      head: string;
+    }>
+  > {
+    return attempt(async () => {
+      let prNumber = pr;
+
+      if (prNumber === undefined) {
+        let branchName = branch;
+
+        if (branchName === undefined) {
+          const current = await requireCurrentBranch();
+
+          if (!current.ok) return current;
+
+          branchName = current.value;
+        }
+
+        const branchPr = await github.findOpenPrByHead(branchName);
+
+        if (!branchPr) {
+          return err({
+            code: 'pr-not-found',
+            message: `No open PR found for the branch ${branchName}`,
+            fix: 'Pass the PR number or URL',
+          });
+        }
+
+        prNumber = branchPr.number;
+      }
+
+      const refs = await github.getPrRefs(prNumber);
+
+      await git.tryFetch();
+
+      // the branch of a merged PR may be deleted
+      if (!(await git.commitExists(refs.headRefOid))) {
+        await git.tryFetch(`refs/pull/${prNumber}/head`);
+      }
+
+      let baseRef: string;
+
+      if (refs.isOpen) {
+        baseRef = await remoteOrLocal(refs.baseRefName);
+      } else {
+        // a merged PR is part of its base, so the base from before the merge
+        baseRef = refs.baseRefOid;
+
+        if (!(await git.commitExists(baseRef))) await git.tryFetch(baseRef);
+      }
+
+      const diff = await getBranchDiff({
+        git,
+        parentRef: baseRef,
+        branchRef: refs.headRefOid,
+        include,
+        exclude: [...config.diff.exclude, ...exclude],
+        ignoreImportOnly,
+      });
+
+      return ok({
+        ...diff,
+        pr: prNumber,
+        base: refs.baseRefName,
+        head: refs.headRefName,
+      });
+    });
+  }
+
   async function verify(input: VerifyInput): Promise<OpResult<VerifyResult>> {
     return attempt(async () =>
       ok(
@@ -1316,6 +1408,7 @@ export function createUmbrellaPrs({
     syncDiff,
     postSyncDiffComment,
     childDiff,
+    prDiff,
     verify,
     autoApprove,
     /** Pure helpers bound to this config */

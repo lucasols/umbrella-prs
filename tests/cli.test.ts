@@ -207,6 +207,58 @@ describe('cli', () => {
     );
   });
 
+  test('diff pr shows the open PR of the current branch, also outside umbrellas', async () => {
+    repo.git('checkout', '--quiet', '-b', 'fix-typo', 'master');
+    repo.commit('fix typo', { 'app.ts': lines(10, { 2: 'fixed' }) });
+    repo.git('push', '--quiet', '-u', 'origin', 'fix-typo');
+    const pr = repo.addPr({ headRefName: 'fix-typo', baseRefName: 'master' });
+
+    // changes of the base after the branch point are not part of the PR
+    repo.git('checkout', '--quiet', 'master');
+    repo.commit('master change', { 'other.ts': 'other\n' });
+    repo.git('push', '--quiet');
+    repo.git('checkout', '--quiet', 'fix-typo');
+
+    const result = await cli([
+      'diff',
+      'pr',
+      '--html',
+      '--out',
+      'viewer.html',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(EXIT.ok);
+    expect(parseJson(result.stdout)).toMatchObject({
+      pr: pr.number,
+      base: 'master',
+      head: 'fix-typo',
+      files: ['app.ts'],
+      file: path.join(repo.dir, 'viewer.html'),
+    });
+    expect(viewerData('viewer.html')).toMatchObject({
+      kind: 'patch',
+      head: `pr:${pr.number}`,
+      sections: [{ rightLabel: `#${pr.number} master...fix-typo` }],
+    });
+
+    repo.git('checkout', '--quiet', 'master');
+
+    const byNumber = await cli(['diff', 'pr', `#${pr.number}`, '--json']);
+
+    expect(parseJson(byNumber.stdout)).toMatchObject({
+      pr: pr.number,
+      files: ['app.ts'],
+    });
+  });
+
+  test('diff pr fails when the branch has no open PR', async () => {
+    const result = await cli(['diff', 'pr']);
+
+    expect(result.exitCode).toBe(EXIT.precondition);
+    expect(result.stderr).toContain('No open PR found for the branch beta');
+  });
+
   test('diff view opens a format-patch series with a section per commit', async () => {
     repo.commit('first change', { 'app.ts': lines(10, { 2: 'first' }) });
     repo.commit('second change', { 'other.ts': 'other\n' });

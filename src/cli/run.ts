@@ -78,6 +78,7 @@ const opErrorExitCodes: Record<OpErrorCode, number> = {
   'from-current-not-in-umbrella': EXIT.precondition,
   'unknown-type': EXIT.usage,
   'parent-pr-not-found': EXIT.precondition,
+  'pr-not-found': EXIT.precondition,
   'invalid-dependency': EXIT.precondition,
   'merge-conflicts': EXIT.conflicts,
   'no-merges-found': EXIT.precondition,
@@ -744,6 +745,64 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
   return { data: { ...result }, text: [content] };
 }
 
+async function diffPrCmd(ctx: CommandContext): Promise<CommandOutput> {
+  const target = ctx.positionals[0];
+  const prMatch = target === undefined ? null : prTargetRegex.exec(target);
+  const pr = prMatch?.[1] ?? prMatch?.[2];
+  const result = unwrap(
+    await ctx.umbrella().prDiff({
+      ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
+      include: getStrings(ctx, 'include'),
+      exclude: getStrings(ctx, 'exclude'),
+      ignoreImportOnly: getBoolean(ctx, 'ignore-imports'),
+    }),
+  );
+  const data = {
+    pr: result.pr,
+    base: result.base,
+    head: result.head,
+    files: result.files,
+  };
+  const out = getString(ctx, 'out');
+
+  if (getBoolean(ctx, 'html')) {
+    const filePath =
+      out !== undefined ?
+        path.resolve(ctx.cwd, out)
+      : path.join(tmpdir(), 'umbrella-prs', `pr-diff-${result.pr}.html`);
+
+    mkdirSync(path.dirname(filePath), { recursive: true });
+    writeFileSync(
+      filePath,
+      renderPatchHtml({
+        name: `#${result.pr} ${result.base}...${result.head}`,
+        id: `pr:${result.pr}`,
+        diff: result.diff,
+      }),
+    );
+
+    if (!getBoolean(ctx, 'no-open')) await ctx.openFile(filePath);
+
+    return {
+      data: { ...data, file: filePath },
+      text: [`PR #${result.pr} diff viewer written to ${filePath}`],
+    };
+  }
+
+  if (out !== undefined) {
+    const filePath = writeOutput(ctx, out, result.diff);
+
+    return {
+      data: { ...data, file: filePath },
+      text: [
+        `PR #${result.pr} diff written to ${filePath} (${result.files.length} files)`,
+      ],
+    };
+  }
+
+  return { data: { ...data, diff: result.diff }, text: [result.diff] };
+}
+
 async function diffChildCmd(ctx: CommandContext): Promise<CommandOutput> {
   const result = unwrap(
     await ctx.umbrella().childDiff({
@@ -1306,6 +1365,43 @@ export const commands: CommandDef[] = [
       },
     },
     run: diffViewCmd,
+  },
+  {
+    path: ['diff', 'pr'],
+    args: '[pr|branch]',
+    description:
+      'Diff of any PR (number, #number or URL) as GitHub shows it, defaults to the open PR of the current branch',
+    examples: [
+      'umbrella-prs diff pr --html',
+      'umbrella-prs diff pr 123 --html',
+    ],
+    options: {
+      include: {
+        type: 'string',
+        multiple: true,
+        description: 'Glob to include, repeatable',
+      },
+      exclude: {
+        type: 'string',
+        multiple: true,
+        description: 'Glob to exclude, repeatable',
+      },
+      'ignore-imports': {
+        type: 'boolean',
+        description: 'Drop files whose changes are only imports/exports',
+      },
+      out: { type: 'string', description: 'Write the diff to this file' },
+      html: {
+        type: 'boolean',
+        description:
+          'Write an HTML viewer, where files can be marked as viewed, and open it',
+      },
+      'no-open': {
+        type: 'boolean',
+        description: 'Do not open the HTML viewer',
+      },
+    },
+    run: diffPrCmd,
   },
   {
     path: ['diff', 'child'],
