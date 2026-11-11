@@ -639,14 +639,26 @@ async function syncCmd(ctx: CommandContext): Promise<CommandOutput> {
 function writeOutput(ctx: CommandContext, file: string, content: string) {
   const filePath = path.resolve(ctx.cwd, file);
 
+  mkdirSync(path.dirname(filePath), { recursive: true });
   writeFileSync(filePath, content);
 
   return filePath;
 }
 
-/** HTML viewers are served, unless a file or JSON is asked for */
+const htmlFileRegex = /\.html?$/i;
+
+/** The viewer is served, unless the diff is printed or a file or JSON is asked for */
 function servesViewer(ctx: CommandContext) {
-  return getString(ctx, 'out') === undefined && !ctx.json;
+  return (
+    getString(ctx, 'out') === undefined &&
+    !ctx.json &&
+    !getBoolean(ctx, 'print')
+  );
+}
+
+/** `--out` with an HTML file writes the standalone viewer, other files get the diff */
+function writesViewerFile(ctx: CommandContext) {
+  return htmlFileRegex.test(getString(ctx, 'out') ?? '');
 }
 
 type Watcher = { close: () => void };
@@ -842,7 +854,10 @@ async function diffViewCmd(ctx: CommandContext): Promise<CommandOutput> {
 }
 
 async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
-  const html = getBoolean(ctx, 'html');
+  const serves = servesViewer(ctx);
+  const writesViewer = writesViewerFile(ctx);
+  // the viewer also shows the file contents and the diff against the base
+  const forViewer = serves || writesViewer;
   const target = ctx.positionals[0];
   const prMatch = target === undefined ? null : prTargetRegex.exec(target);
   const pr = prMatch?.[1] ?? prMatch?.[2];
@@ -855,8 +870,8 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
         left: getString(ctx, 'left'),
         right: getString(ctx, 'right'),
         exclude: getStrings(ctx, 'exclude'),
-        includeContents: html,
-        includeBaseDiff: html,
+        includeContents: forViewer,
+        includeBaseDiff: forViewer,
         fetch,
       }),
     );
@@ -864,7 +879,7 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
 
   const result = await getSyncDiff({ fetch: true });
 
-  if (html && servesViewer(ctx)) {
+  if (serves) {
     return serveViewer(ctx, {
       label: 'Sync diff viewer',
       page: buildSyncDiffPage(result, { base: result.base }),
@@ -879,21 +894,14 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
     });
   }
 
-  if (html) {
-    const out = getString(ctx, 'out');
-    const filePath =
-      out !== undefined ?
-        path.resolve(ctx.cwd, out)
-      : path.join(
-          tmpdir(),
-          'umbrella-prs',
-          `sync-diff-${result.head.slice(0, 12)}.html`,
-        );
+  const out = getString(ctx, 'out');
 
-    mkdirSync(path.dirname(filePath), { recursive: true });
-    writeFileSync(filePath, renderSyncDiffHtml(result, { base: result.base }));
-
-    if (!getBoolean(ctx, 'no-open')) await ctx.openFile(filePath);
+  if (out !== undefined && writesViewer) {
+    const filePath = writeOutput(
+      ctx,
+      out,
+      renderSyncDiffHtml(result, { base: result.base }),
+    );
 
     return {
       data: { ...result, file: filePath },
@@ -910,8 +918,6 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
       ].join('\n'),
     )
     .join('\n\n');
-
-  const out = getString(ctx, 'out');
 
   if (out !== undefined) {
     const filePath = writeOutput(ctx, out, `${content}\n`);
@@ -1003,9 +1009,7 @@ async function diffPrCmd(ctx: CommandContext): Promise<CommandOutput> {
     ignoreImportOnly: getBoolean(ctx, 'ignore-imports'),
   };
 
-  if (getBoolean(ctx, 'html') && servesViewer(ctx)) {
-    return servePrDiff(ctx, options);
-  }
+  if (servesViewer(ctx)) return servePrDiff(ctx, options);
 
   const result = unwrap(await ctx.umbrella().prDiff(options));
   const data = {
@@ -1016,23 +1020,16 @@ async function diffPrCmd(ctx: CommandContext): Promise<CommandOutput> {
   };
   const out = getString(ctx, 'out');
 
-  if (getBoolean(ctx, 'html')) {
-    const filePath =
-      out !== undefined ?
-        path.resolve(ctx.cwd, out)
-      : path.join(tmpdir(), 'umbrella-prs', `pr-diff-${result.pr}.html`);
-
-    mkdirSync(path.dirname(filePath), { recursive: true });
-    writeFileSync(
-      filePath,
+  if (out !== undefined && writesViewerFile(ctx)) {
+    const filePath = writeOutput(
+      ctx,
+      out,
       renderPatchHtml({
         name: `#${result.pr} ${result.base}...${result.head}`,
         id: `pr:${result.pr}`,
         diff: result.diff,
       }),
     );
-
-    if (!getBoolean(ctx, 'no-open')) await ctx.openFile(filePath);
 
     return {
       data: { ...data, file: filePath },
@@ -1425,6 +1422,19 @@ const syncDiffOptions: Record<string, OptionDef> = {
   },
 };
 
+/** Of the commands that serve the viewer by default */
+const diffOutputOptions: Record<string, OptionDef> = {
+  print: {
+    type: 'boolean',
+    description: 'Print the diff instead of serving the viewer',
+  },
+  out: {
+    type: 'string',
+    description:
+      'Write the diff to this file instead of serving the viewer, or the standalone viewer when the file is .html',
+  },
+};
+
 const viewerOptions: Record<string, OptionDef> = {
   port: {
     type: 'string',
@@ -1591,19 +1601,14 @@ export const commands: CommandDef[] = [
     path: ['diff', 'sync'],
     args: '[branch|pr]',
     description:
-      'Conflict resolutions and manual edits of a sync branch or PR (number, #number or URL), compared with the automatic merge',
+      'Conflict resolutions and manual edits of a sync branch or PR (number, #number or URL), compared with the automatic merge. Serves the HTML viewer, where files can be marked as viewed, and opens it in the browser. It updates when the branches move',
     options: {
       left: {
         type: 'string',
         description: 'Left branch, defaults to the umbrella',
       },
       ...syncDiffOptions,
-      out: { type: 'string', description: 'Write the diff to this file' },
-      html: {
-        type: 'boolean',
-        description:
-          'Serve an HTML viewer that updates when the repo changes, where files can be marked as viewed, and open it in the browser. With --out or --json it is written to a file instead',
-      },
+      ...diffOutputOptions,
       ...viewerOptions,
     },
     run: diffSyncCmd,
@@ -1630,11 +1635,8 @@ export const commands: CommandDef[] = [
     path: ['diff', 'pr'],
     args: '[pr|branch]',
     description:
-      'Diff of any PR (number, #number or URL) as GitHub shows it, defaults to the open PR of the current branch',
-    examples: [
-      'umbrella-prs diff pr --html',
-      'umbrella-prs diff pr 123 --html',
-    ],
+      'Diff of any PR (number, #number or URL) as GitHub shows it, defaults to the open PR of the current branch. Serves the HTML viewer, where files can be marked as viewed, and opens it in the browser. It updates when the repo changes',
+    examples: ['umbrella-prs diff pr', 'umbrella-prs diff pr 123 --print'],
     options: {
       include: {
         type: 'string',
@@ -1650,12 +1652,7 @@ export const commands: CommandDef[] = [
         type: 'boolean',
         description: 'Drop files whose changes are only imports/exports',
       },
-      out: { type: 'string', description: 'Write the diff to this file' },
-      html: {
-        type: 'boolean',
-        description:
-          'Serve an HTML viewer that updates when the repo changes, where files can be marked as viewed, and open it in the browser. With --out or --json it is written to a file instead',
-      },
+      ...diffOutputOptions,
       ...viewerOptions,
     },
     run: diffPrCmd,

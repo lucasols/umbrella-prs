@@ -339,7 +339,7 @@ describe('sync diff', () => {
     expect(section?.diff).toContain('+edited');
     expect(section?.diff).not.toMatch(shaRegex);
     expect(result.reviewCommand).toBe(
-      `umbrella-prs diff sync ${result.head} --left feature/umbrella/billing --html`,
+      `umbrella-prs diff sync ${result.head} --left feature/umbrella/billing`,
     );
     expect(section?.contents).toBeUndefined();
   });
@@ -428,9 +428,7 @@ describe('sync diff', () => {
     const result = unwrap(await u.syncDiff({ mode: 'local', pr: pr.number }));
 
     expect(result.head).toBe(pr.headRefOid);
-    expect(result.reviewCommand).toBe(
-      `umbrella-prs diff sync ${pr.number} --html`,
-    );
+    expect(result.reviewCommand).toBe(`umbrella-prs diff sync ${pr.number}`);
     expect(result.sections[0]).toMatchObject({
       leftLabel: 'feature/umbrella/billing',
       rightLabel: 'beta',
@@ -478,7 +476,7 @@ describe('sync diff', () => {
     );
 
     expect(posted.body).toContain('## Sync diff');
-    expect(posted.body).toContain('umbrella-prs diff sync 102 --html');
+    expect(posted.body).toContain('umbrella-prs diff sync 102');
     expect(repo.comments).toHaveLength(1);
 
     unwrap(await u.postSyncDiffComment({ prNumber: 102, result }));

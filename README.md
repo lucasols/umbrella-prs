@@ -55,9 +55,10 @@ umbrella-prs create sync --from feature/other             # under/<name>/sync-fe
 umbrella-prs convert my-work --umbrella new-billing       # child + merge the current branch
 umbrella-prs sync [--stash]                               # child <- umbrella, umbrella <- base
 umbrella-prs tree
-umbrella-prs diff sync --out sync.diff                    # conflict resolutions of a sync branch
-umbrella-prs diff sync 123 --html                         # of a sync PR, also merged ones, in the browser
-umbrella-prs diff pr --html                              # the PR of the current branch in the browser, updated as the code changes
+umbrella-prs diff sync                                    # conflict resolutions of a sync branch, in the browser
+umbrella-prs diff sync 123 --out sync.diff                # of a sync PR, also merged ones, to a file
+umbrella-prs diff pr                                     # the PR of the current branch in the browser, updated as the code changes
+umbrella-prs diff pr 123 --print                         # any PR, printed
 umbrella-prs diff child --exclude '**/pt.json' --ignore-imports --out pr.diff
 umbrella-prs diff view changes.patch                     # any .diff/.patch file in the browser
 git diff main | umbrella-prs diff view -
@@ -73,7 +74,7 @@ For agents:
 - Every command is non-interactive with flags. It prompts only when stdin is a TTY and a value is missing, and never with `--yes`, `--json` or a non-TTY stdin.
 - `--json` prints `{ "ok": true, ... }`, or `{ "ok": false, "error": { "code", "message", "fix" } }`, to stdout. Progress goes to stderr.
 - Exit codes: `0` ok, `1` failed, `2` usage error, `3` merge conflicts left in progress, `4` config error, `5` precondition failed (dirty tree, not found).
-- The HTML viewers (`diff sync --html`, `diff pr --html` and `diff view`) are servers that run until they are stopped. Pass `--out <file>` or `--json` to write the page to a file and exit.
+- `diff sync`, `diff pr` and `diff view` serve the HTML viewer until they are stopped. Pass `--print` (the diff to stdout), `--out <file>` or `--json` to get the diff and exit.
 
 ## CI
 
@@ -108,9 +109,9 @@ The sync diff shows what a sync PR changed on top of the automatic merge: confli
 
 When the PR merged more than one branch, each merge commit gets its own section.
 
-The comment always starts with the command that opens the diff in the browser, e.g. `umbrella-prs diff sync 123 --html`. When the package is a dependency of the repo, the command runs it through the repo's package manager, detected from the `packageManager` field or the lockfile, e.g. `pnpm exec umbrella-prs diff sync 123 --html`. Diffs too big for the comment show only that command, plus the plain git command in a collapsed block.
+The comment always starts with the command that opens the diff in the browser, e.g. `umbrella-prs diff sync 123`. When the package is a dependency of the repo, the command runs it through the repo's package manager, detected from the `packageManager` field or the lockfile, e.g. `pnpm exec umbrella-prs diff sync 123`. Diffs too big for the comment show only that command, plus the plain git command in a collapsed block.
 
-`diff sync --html` serves the viewer on `http://localhost:4783` and opens it in the browser (`--no-open` skips that), until it is stopped with Ctrl+C. See [Viewer server](#viewer-server). It renders the diff with [`@pierre/diffs`](https://diffs.com), loaded from esm.sh, and has:
+`diff sync` serves the viewer on `http://localhost:4783` and opens it in the browser (`--no-open` skips that), until it is stopped with Ctrl+C. See [Viewer server](#viewer-server). It renders the diff with [`@pierre/diffs`](https://diffs.com), loaded from esm.sh, and has:
 
 - A file tree with folders and file type icons from [`@pierre/trees`](https://trees.software), with their own icons for `*.test.*`/`*.spec.*` and `*.stories.*` files. Files and whole folders can be marked as viewed. Viewed files are collapsed and saved per sync PR (its merged branches) until their diff changes. The tree has a filter and an exclude search, with space-separated terms that are text in the path, globs (`*.test.ts`, `src/**/*.ts`, `{a,b}.ts`, matched against the file name when they have no `/`) or `/regex/`. The files that match can be marked as viewed at once. The tree follows the current file and can be resized by dragging its edge (double-click resets it).
 - One file at a time mode, with `n`/`p` to move, `v` to mark as viewed and go to the next unviewed file, and `u` to undo the last mark and go back to that file.
@@ -121,7 +122,7 @@ The comment always starts with the command that opens the diff in the browser, e
 
 `diff sync` takes a branch, a commit or a PR (`123`, `#123` or its URL). For a merged PR, the base from before the merge is used.
 
-`diff pr [pr|branch]` shows the diff of any PR as GitHub shows it: the PR head against its merge base with the PR base. It defaults to the open PR of the current branch and also takes a branch or a PR (`123`, `#123` or its URL), merged ones too. With `--html` it opens in the same viewer, with viewed files saved per PR.
+`diff pr [pr|branch]` shows the diff of any PR as GitHub shows it: the PR head against its merge base with the PR base. It defaults to the open PR of the current branch and also takes a branch or a PR (`123`, `#123` or its URL), merged ones too. It opens in the same viewer, with viewed files saved per PR.
 
 `diff view <file>` opens any `.diff` or `.patch` file in the same viewer, `-` reads it from stdin. A `git format-patch` series gets a section per commit. Viewed files are saved per file path.
 
@@ -129,15 +130,19 @@ The comment always starts with the command that opens the diff in the browser, e
 
 The viewers are served on localhost, on port `4783` or the next free one (`--port` sets it, `0` uses any free port), and the open pages update in place when what they show changes, keeping the scroll position and the files that did not change:
 
-- `diff pr --html` follows the local repo, so the diff can be reviewed while the code is written. When the PR branch is checked out it shows the working tree, with the uncommitted and untracked files. Otherwise it shows the local branch, or the branch as it was last fetched. Merged and closed PRs show the diff they had.
-- `diff sync --html` is updated when branches move: commits, checkouts, fetches and pushes.
+- `diff pr` follows the local repo, so the diff can be reviewed while the code is written. When the PR branch is checked out it shows the working tree, with the uncommitted and untracked files. Otherwise it shows the local branch, or the branch as it was last fetched. Merged and closed PRs show the diff they had.
+- `diff sync` is updated when branches move: commits, checkouts, fetches and pushes.
 - `diff view <file>` is updated when the file changes.
 
-`diff pr --html` also syncs the viewed files with the PR on GitHub, in both directions: files marked as viewed in the viewer are marked in the PR, and files marked in the PR show up as viewed. Files with changes that were not pushed yet are synced after the push, since GitHub has another version of them. The `GitHub sync` button turns it off.
+`diff pr` also syncs the viewed files with the PR on GitHub, in both directions: files marked as viewed in the viewer are marked in the PR, and files marked in the PR show up as viewed. Files with changes that were not pushed yet are synced after the push, since GitHub has another version of them. The `GitHub sync` button turns it off.
 
 The viewed files and the preferences are saved by the server in `~/.local/state/umbrella-prs/viewer.json` (or in `$XDG_STATE_HOME`), so they are the same on every port.
 
-With `--out <file>` or `--json` the viewer is written to a standalone file instead, which doesn't update and saves its state in the browser.
+Nothing is served with:
+
+- `--print`: the diff is printed.
+- `--out <file>`: the diff is written to the file. When the file is `.html` it gets the standalone viewer instead, which doesn't update and saves its state in the browser. `diff view --out` always writes the viewer.
+- `--json`: the diff comes in the JSON output.
 
 ## Library
 

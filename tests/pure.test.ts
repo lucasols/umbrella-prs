@@ -674,7 +674,7 @@ describe('misc', () => {
     const result: SyncDiffResult = {
       strategy: 'combined',
       head: 'a'.repeat(40),
-      reviewCommand: 'umbrella-prs diff sync 7 --html',
+      reviewCommand: 'umbrella-prs diff sync 7',
       sections: [
         {
           leftLabel: 'feature/umbrella/billing',
@@ -692,13 +692,13 @@ describe('misc', () => {
 
     const small = renderSyncDiffComment(result, { maxChars: 1000 });
 
-    expect(small).toContain('~~~sh\numbrella-prs diff sync 7 --html\n~~~');
+    expect(small).toContain('~~~sh\numbrella-prs diff sync 7\n~~~');
     expect(small).toContain('~~~diff\n-<<<<<<< feature/umbrella/billing');
     expect(small).not.toContain('git diff x y');
 
     const big = renderSyncDiffComment(result, { maxChars: 10 });
 
-    expect(big).toContain('umbrella-prs diff sync 7 --html');
+    expect(big).toContain('umbrella-prs diff sync 7');
     expect(big).toContain('<details><summary>Plain git command</summary>');
     expect(big).toContain('git diff x y');
     expect(big).not.toContain('~~~diff');

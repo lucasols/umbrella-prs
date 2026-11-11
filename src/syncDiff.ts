@@ -138,7 +138,6 @@ export async function getSyncDiff({
     ...(pr !== undefined ? [String(pr)] : [headSha, '--left', left]),
     ...(right !== undefined ? ['--right', right] : []),
     ...exclude.flatMap((glob) => ['--exclude', glob]),
-    '--html',
   ]);
 
   async function getMergeBase(a: string, b: string): Promise<string | null> {

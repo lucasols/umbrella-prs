@@ -301,7 +301,6 @@ describe('cli', () => {
     const result = await cli([
       'diff',
       'sync',
-      '--html',
       '--out',
       'viewer.html',
       '--json',
@@ -329,14 +328,7 @@ describe('cli', () => {
     repo.git('push', '--quiet');
     repo.git('checkout', '--quiet', 'fix-typo');
 
-    const result = await cli([
-      'diff',
-      'pr',
-      '--html',
-      '--out',
-      'viewer.html',
-      '--json',
-    ]);
+    const result = await cli(['diff', 'pr', '--out', 'viewer.html', '--json']);
 
     expect(result.exitCode).toBe(EXIT.ok);
     expect(parseJson(result.stdout)).toMatchObject({
@@ -354,6 +346,25 @@ describe('cli', () => {
 
     repo.git('checkout', '--quiet', 'master');
 
+    // nothing is served when the diff is printed
+    const printed = await cli(['diff', 'pr', String(pr.number), '--print']);
+
+    expect(printed.exitCode).toBe(EXIT.ok);
+    expect(printed.stdout).toContain('+fixed');
+
+    const written = await cli([
+      'diff',
+      'pr',
+      String(pr.number),
+      '--out',
+      'out/pr.diff',
+    ]);
+
+    expect(written.stdout).toContain('diff written to');
+    expect(readFileSync(path.join(repo.dir, 'out/pr.diff'), 'utf8')).toBe(
+      printed.stdout.slice(0, -1),
+    );
+
     const byNumber = await cli(['diff', 'pr', `#${pr.number}`, '--json']);
 
     expect(parseJson(byNumber.stdout)).toMatchObject({
@@ -362,13 +373,13 @@ describe('cli', () => {
     });
   });
 
-  test('diff pr --html serves the diff of the working tree and follows it', async () => {
+  test('diff pr serves the diff of the working tree and follows it', async () => {
     repo.git('checkout', '--quiet', '-b', 'fix-typo', 'master');
     repo.commit('fix typo', { 'app.ts': lines(10, { 2: 'fixed' }) });
     repo.git('push', '--quiet', '-u', 'origin', 'fix-typo');
     const pr = repo.addPr({ headRefName: 'fix-typo', baseRefName: 'master' });
 
-    const viewer = await serve(['diff', 'pr', '--html']);
+    const viewer = await serve(['diff', 'pr']);
     const first = await viewer.data();
 
     expect(first).toMatchObject({
@@ -459,7 +470,7 @@ describe('cli', () => {
     const pr = repo.addPr({ headRefName: 'fix-typo', baseRefName: 'master' });
     repo.viewedFiles[pr.number] = { 'a.ts': 'VIEWED', 'b.ts': 'DISMISSED' };
 
-    const viewer = await serve(['diff', 'pr', '--html']);
+    const viewer = await serve(['diff', 'pr']);
     const viewedKey = `umbrella-prs:diff-viewed-files:pr:${pr.number}`;
 
     expect(await viewer.live()).toMatchObject({ storage: {} });
@@ -510,7 +521,7 @@ describe('cli', () => {
     expect(formPost.status).toBe(404);
   });
 
-  test('diff sync --html serves the sync diff and follows the branch', async () => {
+  test('diff sync serves the sync diff and follows the branch', async () => {
     await cli(['create', 'umbrella', 'billing']);
     repo.commit('umbrella change', { 'app.ts': lines(10, { 2: 'umbrella' }) });
     repo.git('push', '--quiet');
@@ -522,7 +533,7 @@ describe('cli', () => {
     repo.git('add', 'app.ts');
     repo.git('commit', '--quiet', '--no-edit');
 
-    const viewer = await serve(['diff', 'sync', '--html']);
+    const viewer = await serve(['diff', 'sync']);
     const first = await viewer.data();
 
     expect(first).toMatchObject({
