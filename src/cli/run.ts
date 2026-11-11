@@ -5,7 +5,13 @@ import { isRecord } from '../utils.typeGuards';
 import { defaultExec, type Exec } from '../exec';
 import { parseBranchStrict } from '../naming';
 import { renderSyncDiffComment } from '../syncDiff';
-import { renderPatchHtml, renderSyncDiffHtml } from '../syncDiffHtml';
+import {
+  buildPatchPage,
+  buildSyncDiffPage,
+  renderPatchHtml,
+  renderSyncDiffHtml,
+  type ViewerPage,
+} from '../syncDiffHtml';
 import type { VerifyResult } from '../verify';
 import {
   createUmbrellaPrs,
@@ -18,6 +24,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { loadConfig } from './loadConfig';
 import { detectCliCommand } from './packageManager';
+import {
+  getViewerStoragePath,
+  PortInUseError,
+  startViewerServer,
+  type ViewerGitHubSync,
+} from './viewerServer';
+import { watchPaths, watchRepo } from './watch';
 import {
   createReadlinePrompter,
   PromptCancelledError,
@@ -124,12 +137,18 @@ type CommandContext = {
   umbrella: () => UmbrellaPrs;
   interactive: boolean;
   yes: boolean;
+  /** `--json` was passed */
+  json: boolean;
   prompter: Prompter;
   env: Record<string, string | undefined>;
   cwd: string;
   log: (text: string) => void;
   /** Opens a file in the default app, a no-op when not attached to a terminal */
   openFile: (filePath: string) => Promise<void>;
+  /** Opens the URL of a served viewer in the browser */
+  openBrowser: (url: string) => Promise<void>;
+  /** Resolves when a served viewer should stop, e.g. on Ctrl+C */
+  untilStopped: () => Promise<void>;
   readStdin: () => Promise<string>;
 };
 
@@ -625,6 +644,113 @@ function writeOutput(ctx: CommandContext, file: string, content: string) {
   return filePath;
 }
 
+/** HTML viewers are served, unless a file or JSON is asked for */
+function servesViewer(ctx: CommandContext) {
+  return getString(ctx, 'out') === undefined && !ctx.json;
+}
+
+type Watcher = { close: () => void };
+
+/**
+ * Serves a viewer page until the command is stopped and opens it in the
+ * browser. The page is refreshed when what `watch` follows changes
+ */
+async function serveViewer(
+  ctx: CommandContext,
+  {
+    label,
+    page,
+    refresh,
+    watch,
+    github,
+  }: {
+    label: string;
+    page: ViewerPage;
+    /** The page as it is now */
+    refresh?: () => Promise<ViewerPage>;
+    watch?: (onChange: () => void) => Watcher | Promise<Watcher>;
+    github?: ViewerGitHubSync;
+  },
+): Promise<CommandOutput> {
+  const portOption = getString(ctx, 'port');
+  const port = portOption === undefined ? undefined : Number(portOption);
+
+  if (
+    port !== undefined &&
+    (!Number.isInteger(port) || port < 0 || port > 65_535)
+  ) {
+    throw usageError(`Invalid --port "${portOption}"`, 'Pass a port number');
+  }
+
+  const server = await startViewerServer({
+    page,
+    port,
+    storagePath: getViewerStoragePath(ctx.env),
+    github,
+  }).catch((error: unknown) => {
+    if (error instanceof PortInUseError) {
+      throw new CliError({
+        code: 'port-in-use',
+        message: error.message,
+        fix: 'Pass another `--port`, or stop the viewer that is using it',
+        exitCode: EXIT.failed,
+      });
+    }
+
+    throw error;
+  });
+
+  let refreshing = false;
+  let queued = false;
+  let lastError: string | null = null;
+
+  async function update() {
+    if (!refresh) return;
+
+    if (refreshing) {
+      queued = true;
+      return;
+    }
+
+    refreshing = true;
+
+    try {
+      server.setPage(await refresh());
+      lastError = null;
+    } catch (error) {
+      // e.g. in the middle of a rebase, the page keeps what it has
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (message !== lastError)
+        ctx.log(`Could not update the diff: ${message}`);
+
+      lastError = message;
+    } finally {
+      refreshing = false;
+
+      if (queued) {
+        queued = false;
+        void update();
+      }
+    }
+  }
+
+  const watcher = refresh && watch ? await watch(() => void update()) : null;
+
+  ctx.log(
+    `${label} at ${server.url}${watcher ? ', updated live' : ''}. Press Ctrl+C to stop`,
+  );
+
+  if (!getBoolean(ctx, 'no-open')) await ctx.openBrowser(server.url);
+
+  await ctx.untilStopped();
+
+  watcher?.close();
+  await server.close();
+
+  return { data: { url: server.url }, text: ['Stopped the diff viewer'] };
+}
+
 async function diffViewCmd(ctx: CommandContext): Promise<CommandOutput> {
   const target = ctx.positionals[0];
 
@@ -642,19 +768,52 @@ async function diffViewCmd(ctx: CommandContext): Promise<CommandOutput> {
     throw usageError(`File not found: ${target}`);
   }
 
-  const diff =
-    sourcePath === null ?
-      await ctx.readStdin()
-    : readFileSync(sourcePath, 'utf8');
+  function checkDiff(diff: string) {
+    if (!diffStartRegex.test(diff)) {
+      throw usageError(
+        `${fromStdin ? 'stdin' : target} is not a diff`,
+        'Pass the output of `git diff`, `git format-patch` or `diff -u`',
+      );
+    }
 
-  if (!diffStartRegex.test(diff)) {
-    throw usageError(
-      `${fromStdin ? 'stdin' : target} is not a diff`,
-      'Pass the output of `git diff`, `git format-patch` or `diff -u`',
-    );
+    return diff;
   }
 
+  const diff = checkDiff(
+    sourcePath === null ?
+      await ctx.readStdin()
+    : readFileSync(sourcePath, 'utf8'),
+  );
+
   const name = sourcePath === null ? 'stdin' : path.basename(sourcePath);
+
+  if (servesViewer(ctx)) {
+    return serveViewer(ctx, {
+      label: `Diff viewer of ${name}`,
+      page: buildPatchPage({ name, id: sourcePath ?? undefined, diff }),
+      ...(sourcePath !== null ?
+        {
+          refresh: () =>
+            Promise.resolve(
+              buildPatchPage({
+                name,
+                id: sourcePath,
+                diff: checkDiff(readFileSync(sourcePath, 'utf8')),
+              }),
+            ),
+          // the folder, editors replace the file when saving
+          watch: (onChange) =>
+            watchPaths({
+              roots: [path.dirname(sourcePath)],
+              recursive: false,
+              isRelevant: (filePath) => filePath === sourcePath,
+              onChange,
+            }),
+        }
+      : {}),
+    });
+  }
+
   const out = getString(ctx, 'out');
   const filePath =
     out !== undefined ?
@@ -687,17 +846,38 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
   const target = ctx.positionals[0];
   const prMatch = target === undefined ? null : prTargetRegex.exec(target);
   const pr = prMatch?.[1] ?? prMatch?.[2];
-  const result = unwrap(
-    await ctx.umbrella().syncDiff({
-      mode: 'local',
-      ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
-      left: getString(ctx, 'left'),
-      right: getString(ctx, 'right'),
-      exclude: getStrings(ctx, 'exclude'),
-      includeContents: html,
-      includeBaseDiff: html,
-    }),
-  );
+
+  async function getSyncDiff({ fetch }: { fetch: boolean }) {
+    return unwrap(
+      await ctx.umbrella().syncDiff({
+        mode: 'local',
+        ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
+        left: getString(ctx, 'left'),
+        right: getString(ctx, 'right'),
+        exclude: getStrings(ctx, 'exclude'),
+        includeContents: html,
+        includeBaseDiff: html,
+        fetch,
+      }),
+    );
+  }
+
+  const result = await getSyncDiff({ fetch: true });
+
+  if (html && servesViewer(ctx)) {
+    return serveViewer(ctx, {
+      label: 'Sync diff viewer',
+      page: buildSyncDiffPage(result, { base: result.base }),
+      refresh: async () => {
+        const refreshed = await getSyncDiff({ fetch: false });
+
+        return buildSyncDiffPage(refreshed, { base: refreshed.base });
+      },
+      // the sync diff is between commits, so only when branches move
+      watch: (onChange) =>
+        watchRepo({ git: ctx.umbrella().git, worktree: false, onChange }),
+    });
+  }
 
   if (html) {
     const out = getString(ctx, 'out');
@@ -745,18 +925,89 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
   return { data: { ...result }, text: [content] };
 }
 
+const livePrDiffNotes = {
+  worktree: 'following the working tree',
+  branch: 'following the local branch',
+  remote: '',
+} as const;
+
+/**
+ * Serves the diff of a PR as the local repo has it, and syncs the files
+ * marked as viewed with the PR on GitHub
+ */
+async function servePrDiff(
+  ctx: CommandContext,
+  options: Parameters<UmbrellaPrs['livePrDiff']>[0],
+): Promise<CommandOutput> {
+  const u = ctx.umbrella();
+  const live = unwrap(await u.livePrDiff(options));
+
+  async function getPage() {
+    const result = unwrap(await live.refresh());
+
+    return buildPatchPage({
+      name: `#${live.pr} ${live.base}...${live.head}`,
+      id: `pr:${live.pr}`,
+      diff: result.diff,
+      note: livePrDiffNotes[result.source],
+      github:
+        live.isOpen ?
+          {
+            pr: live.pr,
+            head: result.githubHead,
+            unpushed: result.unpushedFiles,
+          }
+        : undefined,
+    });
+  }
+
+  // the id GitHub uses for the PR, it comes with the viewed files
+  let prId: string | null = null;
+
+  return serveViewer(ctx, {
+    label: `PR #${live.pr} diff viewer`,
+    page: await getPage(),
+    // merged and closed PRs don't change
+    ...(live.isOpen ?
+      {
+        refresh: getPage,
+        watch: (onChange) =>
+          watchRepo({ git: u.git, worktree: true, onChange }),
+        github: {
+          getViewed: async () => {
+            const viewed = await u.github.getPrViewedFiles(live.pr);
+
+            prId = viewed.id;
+
+            return viewed.files;
+          },
+          setViewed: async (paths, viewed) => {
+            prId ??= (await u.github.getPrViewedFiles(live.pr)).id;
+
+            await u.github.setPrFilesViewed(prId, paths, viewed);
+          },
+        },
+      }
+    : {}),
+  });
+}
+
 async function diffPrCmd(ctx: CommandContext): Promise<CommandOutput> {
   const target = ctx.positionals[0];
   const prMatch = target === undefined ? null : prTargetRegex.exec(target);
   const pr = prMatch?.[1] ?? prMatch?.[2];
-  const result = unwrap(
-    await ctx.umbrella().prDiff({
-      ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
-      include: getStrings(ctx, 'include'),
-      exclude: getStrings(ctx, 'exclude'),
-      ignoreImportOnly: getBoolean(ctx, 'ignore-imports'),
-    }),
-  );
+  const options = {
+    ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
+    include: getStrings(ctx, 'include'),
+    exclude: getStrings(ctx, 'exclude'),
+    ignoreImportOnly: getBoolean(ctx, 'ignore-imports'),
+  };
+
+  if (getBoolean(ctx, 'html') && servesViewer(ctx)) {
+    return servePrDiff(ctx, options);
+  }
+
+  const result = unwrap(await ctx.umbrella().prDiff(options));
   const data = {
     pr: result.pr,
     base: result.base,
@@ -1174,6 +1425,18 @@ const syncDiffOptions: Record<string, OptionDef> = {
   },
 };
 
+const viewerOptions: Record<string, OptionDef> = {
+  port: {
+    type: 'string',
+    description:
+      'Port of the HTML viewer, defaults to 4783 or the next free one. 0 uses any free port',
+  },
+  'no-open': {
+    type: 'boolean',
+    description: 'Do not open the HTML viewer',
+  },
+};
+
 type CommandDef = {
   path: string[];
   args?: string;
@@ -1339,12 +1602,9 @@ export const commands: CommandDef[] = [
       html: {
         type: 'boolean',
         description:
-          'Write an HTML viewer, where files can be marked as viewed, and open it',
+          'Serve an HTML viewer that updates when the repo changes, where files can be marked as viewed, and open it in the browser. With --out or --json it is written to a file instead',
       },
-      'no-open': {
-        type: 'boolean',
-        description: 'Do not open the HTML viewer',
-      },
+      ...viewerOptions,
     },
     run: diffSyncCmd,
   },
@@ -1352,17 +1612,17 @@ export const commands: CommandDef[] = [
     path: ['diff', 'view'],
     args: '<file|->',
     description:
-      'Open a .diff or .patch file (or `-` for stdin) in the HTML viewer, where files can be marked as viewed',
+      'Serve a .diff or .patch file (or `-` for stdin) in the HTML viewer, where files can be marked as viewed, and open it in the browser. It updates when the file changes',
     examples: [
       'umbrella-prs diff view changes.patch',
       'git diff main | umbrella-prs diff view -',
     ],
     options: {
-      out: { type: 'string', description: 'Write the viewer to this file' },
-      'no-open': {
-        type: 'boolean',
-        description: 'Do not open the HTML viewer',
+      out: {
+        type: 'string',
+        description: 'Write the viewer to this file instead of serving it',
       },
+      ...viewerOptions,
     },
     run: diffViewCmd,
   },
@@ -1394,12 +1654,9 @@ export const commands: CommandDef[] = [
       html: {
         type: 'boolean',
         description:
-          'Write an HTML viewer, where files can be marked as viewed, and open it',
+          'Serve an HTML viewer that updates when the repo changes, where files can be marked as viewed, and open it in the browser. With --out or --json it is written to a file instead',
       },
-      'no-open': {
-        type: 'boolean',
-        description: 'Do not open the HTML viewer',
-      },
+      ...viewerOptions,
     },
     run: diffPrCmd,
   },
@@ -1612,6 +1869,10 @@ export type CliIo = {
   prompter?: Prompter;
   /** Whether files can be opened in the default app, defaults to `isTTY` */
   canOpenFiles?: boolean;
+  /** Whether served viewers can be opened in the browser, defaults to `canOpenFiles` */
+  canOpenBrowser?: boolean;
+  /** Stops a served viewer when aborted, defaults to SIGINT and SIGTERM */
+  signal?: AbortSignal;
   readStdin?: () => Promise<string>;
 };
 
@@ -1691,25 +1952,46 @@ export async function runCli(io: CliIo): Promise<number> {
 
   let umbrellaInstance: UmbrellaPrs | null = null;
 
+  async function open(target: string) {
+    const [cmd, ...args] =
+      process.platform === 'darwin' ? ['open']
+      : process.platform === 'win32' ? ['cmd', '/c', 'start', '""']
+      : ['xdg-open'];
+
+    if (cmd) await (io.exec ?? defaultExec)(cmd, [...args, target]);
+  }
+
   const ctx: CommandContext = {
     positionals: parsed.positionals,
     values,
     interactive,
     yes,
+    json,
     prompter: io.prompter ?? createReadlinePrompter(),
     env: io.env,
     cwd,
     log,
     openFile: async (filePath) => {
-      if (!(io.canOpenFiles ?? io.isTTY) || json) return;
-
-      const [cmd, ...args] =
-        process.platform === 'darwin' ? ['open']
-        : process.platform === 'win32' ? ['cmd', '/c', 'start', '""']
-        : ['xdg-open'];
-
-      if (cmd) await (io.exec ?? defaultExec)(cmd, [...args, filePath]);
+      if ((io.canOpenFiles ?? io.isTTY) && !json) await open(filePath);
     },
+    openBrowser: async (url) => {
+      if (io.canOpenBrowser ?? io.canOpenFiles ?? io.isTTY) await open(url);
+    },
+    untilStopped: () =>
+      new Promise((resolve) => {
+        const { signal } = io;
+
+        if (signal) {
+          if (signal.aborted) resolve();
+          else
+            signal.addEventListener('abort', () => resolve(), { once: true });
+
+          return;
+        }
+
+        process.once('SIGINT', () => resolve());
+        process.once('SIGTERM', () => resolve());
+      }),
     readStdin: io.readStdin ?? readProcessStdin,
     umbrella: () => {
       if (umbrellaInstance) return umbrellaInstance;

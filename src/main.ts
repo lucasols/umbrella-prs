@@ -14,7 +14,7 @@ export {
   type UmbrellaConfig,
 } from './config';
 export type { Exec, ExecResult } from './exec';
-export type { FullPrInfo, PrInfo } from './github';
+export type { FileViewedState, FullPrInfo, PrInfo } from './github';
 export {
   findUmbrellaBranch,
   formatChildBranch,
@@ -71,6 +71,7 @@ export {
   createUmbrellaPrs,
   type CreatedPr,
   type CreateUmbrellaPrsOptions,
+  type LivePrDiff,
   type OpError,
   type OpErrorCode,
   type OpResult,

@@ -19,6 +19,8 @@ const exitCode = await runCli({
   isTTY: Boolean(process.stdin.isTTY && process.stderr.isTTY),
   // `git diff | umbrella-prs diff view -` still opens the viewer
   canOpenFiles: Boolean(process.stderr.isTTY),
+  // also when an agent runs it in the background, but not in CI
+  canOpenBrowser: !process.env.CI,
 });
 
 process.exitCode = exitCode;

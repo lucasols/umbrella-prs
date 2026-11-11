@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { EXIT, runCli } from '../src/cli/run';
 import type { Prompter } from '../src/cli/prompts';
 import { isRecord } from '../src/utils.typeGuards';
@@ -25,7 +26,11 @@ beforeEach(() => {
   repo.git('push', '--quiet');
 });
 
-afterEach(() => {
+const stopServers: (() => Promise<number>)[] = [];
+
+afterEach(async () => {
+  for (const stop of stopServers.splice(0)) await stop();
+
   repo.cleanup();
 });
 
@@ -71,6 +76,111 @@ function viewerData(file: string): Record<string, unknown> {
   );
 
   return parseJson(match?.[1] ?? '');
+}
+
+const viewerLiveRegex =
+  /<script type="application\/json" id="viewer-live">(.*?)<\/script>/s;
+const viewerUrlRegex = /http:\/\/localhost:\d+/;
+
+/** Runs a command that serves a viewer, it is stopped after the test */
+async function serve(argv: string[], { stdin = '' }: { stdin?: string } = {}) {
+  const controller = new AbortController();
+  let stderr = '';
+
+  const exit = runCli({
+    argv: [...argv, '--port', '0'],
+    cwd: repo.dir,
+    // the viewer state is saved next to the test repo
+    env: { XDG_STATE_HOME: path.join(repo.dir, '..', 'state') },
+    stdout: () => {},
+    stderr: (text) => (stderr += text),
+    isTTY: false,
+    exec: repo.exec,
+    signal: controller.signal,
+    readStdin: () => Promise.resolve(stdin),
+  });
+
+  function stop() {
+    controller.abort();
+
+    return exit;
+  }
+
+  stopServers.push(stop);
+
+  const url = await Promise.race([
+    vi.waitFor(
+      () => {
+        const match = viewerUrlRegex.exec(stderr);
+
+        if (!match) throw new Error('The viewer did not start');
+
+        return match[0];
+      },
+      { timeout: 10_000 },
+    ),
+    exit.then(() => {
+      throw new Error(`The command exited: ${stderr}`);
+    }),
+  ]);
+
+  async function json(
+    pathname: string,
+    body?: unknown,
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(
+      `${url}${pathname}`,
+      body === undefined ?
+        {}
+      : {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+    );
+
+    return parseJson(await response.text());
+  }
+
+  return {
+    url,
+    stop,
+    json,
+    /** The data of the page, as the open pages get it when it changes */
+    data: () => json('/data'),
+    /** The state the server embeds in the page */
+    live: async () => {
+      const html = await (await fetch(url)).text();
+
+      return parseJson(viewerLiveRegex.exec(html)?.[1] ?? '');
+    },
+  };
+}
+
+const untrackedDiffRegex =
+  /\+uncommitted[\s\S]*\+\+\+ b\/src\/new file\.ts[\s\S]*\+untracked/;
+
+/** The next message of a server-sent events response */
+async function readEvent(
+  reader: ReadableStreamDefaultReader<unknown> | undefined,
+): Promise<string> {
+  const chunk = await reader?.read();
+
+  return chunk?.value instanceof Uint8Array ?
+      new TextDecoder().decode(chunk.value)
+    : '';
+}
+
+/** Status of a request made with the `Host` of another site */
+function statusWithHost(url: string, host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    request(url, { headers: { host } }, (response) => {
+      response.resume();
+      resolve(response.statusCode ?? 0);
+    })
+      .on('error', reject)
+      .end();
+  });
 }
 
 function parseJson(text: string): Record<string, unknown> {
@@ -250,6 +360,255 @@ describe('cli', () => {
       pr: pr.number,
       files: ['app.ts'],
     });
+  });
+
+  test('diff pr --html serves the diff of the working tree and follows it', async () => {
+    repo.git('checkout', '--quiet', '-b', 'fix-typo', 'master');
+    repo.commit('fix typo', { 'app.ts': lines(10, { 2: 'fixed' }) });
+    repo.git('push', '--quiet', '-u', 'origin', 'fix-typo');
+    const pr = repo.addPr({ headRefName: 'fix-typo', baseRefName: 'master' });
+
+    const viewer = await serve(['diff', 'pr', '--html']);
+    const first = await viewer.data();
+
+    expect(first).toMatchObject({
+      title: `Diff #${pr.number} master...fix-typo`,
+      subtitle: `<code>#${pr.number} master...fix-typo</code> following the working tree`,
+      data: {
+        kind: 'patch',
+        head: `pr:${pr.number}`,
+        github: { pr: pr.number, unpushed: [] },
+        sections: [{ diff: expect.stringContaining('+fixed') }],
+      },
+    });
+    expect(await viewer.live()).toMatchObject({
+      revision: first.revision,
+      shell: first.shell,
+    });
+
+    // open pages are told about the changes
+    const events = await fetch(`${viewer.url}/events`);
+    const reader = events.body?.getReader();
+
+    expect(await readEvent(reader)).toBe(
+      `data: ${JSON.stringify({ revision: first.revision })}\n\n`,
+    );
+
+    // uncommitted changes and untracked files are part of the diff
+    repo.write('app.ts', lines(10, { 2: 'fixed', 5: 'uncommitted' }));
+    repo.write('src/new file.ts', 'untracked\n');
+    repo.write('node_modules/dep/index.js', 'ignored\n');
+    repo.write('.gitignore', 'node_modules\n');
+
+    await vi.waitFor(
+      async () => {
+        expect(await viewer.data()).toMatchObject({
+          shell: first.shell,
+          data: {
+            github: { unpushed: ['app.ts', '.gitignore', 'src/new file.ts'] },
+            sections: [
+              {
+                diff: expect.stringMatching(untrackedDiffRegex),
+              },
+            ],
+          },
+        });
+      },
+      { timeout: 10_000 },
+    );
+
+    const updated = await viewer.data();
+
+    expect(updated.revision).not.toBe(first.revision);
+    expect(await readEvent(reader)).toContain('data: ');
+
+    await reader?.cancel();
+
+    // another branch is checked out: the local branch, without the working tree
+    repo.git('stash', '--quiet', '--include-untracked');
+    repo.git('checkout', '--quiet', 'master');
+
+    await vi.waitFor(
+      async () => {
+        const data = await viewer.data();
+
+        expect(data.subtitle).toBe(
+          `<code>#${pr.number} master...fix-typo</code> following the local branch`,
+        );
+        expect(data).toMatchObject({
+          data: {
+            github: { unpushed: [] },
+            sections: [{ diff: expect.not.stringContaining('untracked') }],
+          },
+        });
+      },
+      { timeout: 10_000 },
+    );
+
+    expect(await viewer.stop()).toBe(EXIT.ok);
+  });
+
+  test('the served viewer saves its state and syncs the viewed files with GitHub', async () => {
+    repo.git('checkout', '--quiet', '-b', 'fix-typo', 'master');
+    repo.commit('fix typo', {
+      'app.ts': lines(10, { 2: 'fixed' }),
+      'a.ts': 'a\n',
+      'b.ts': 'b\n',
+    });
+    repo.git('push', '--quiet', '-u', 'origin', 'fix-typo');
+    const pr = repo.addPr({ headRefName: 'fix-typo', baseRefName: 'master' });
+    repo.viewedFiles[pr.number] = { 'a.ts': 'VIEWED', 'b.ts': 'DISMISSED' };
+
+    const viewer = await serve(['diff', 'pr', '--html']);
+    const viewedKey = `umbrella-prs:diff-viewed-files:pr:${pr.number}`;
+
+    expect(await viewer.live()).toMatchObject({ storage: {} });
+
+    await viewer.json('/storage', {
+      entries: {
+        'umbrella-prs:sync-diff-theme': 'pierre-dark',
+        [viewedKey]: { 'app.ts': { sync: 'abc' } },
+        'umbrella-prs:diff-viewed-files:pr:999': { 'other.ts': {} },
+      },
+    });
+
+    // only the state of this diff and the preferences
+    expect((await viewer.live()).storage).toEqual({
+      'umbrella-prs:sync-diff-theme': 'pierre-dark',
+      [viewedKey]: { 'app.ts': { sync: 'abc' } },
+    });
+
+    expect(await viewer.json('/github/viewed')).toEqual({
+      files: { 'a.ts': 'VIEWED', 'app.ts': 'UNVIEWED', 'b.ts': 'DISMISSED' },
+    });
+
+    await viewer.json('/github/viewed', {
+      paths: ['app.ts', 'b.ts'],
+      viewed: true,
+    });
+    await viewer.json('/github/viewed', { paths: ['a.ts'], viewed: false });
+
+    expect(repo.viewedFiles[pr.number]).toEqual({
+      'a.ts': 'UNVIEWED',
+      'app.ts': 'VIEWED',
+      'b.ts': 'VIEWED',
+    });
+
+    // only the viewer page itself can read the diff or change the state
+    expect(await statusWithHost(`${viewer.url}/data`, 'other.example')).toBe(
+      403,
+    );
+
+    const formPost = await fetch(`${viewer.url}/storage`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/plain' },
+      body: JSON.stringify({
+        entries: { 'umbrella-prs:sync-diff-theme': 'x' },
+      }),
+    });
+
+    expect(formPost.status).toBe(404);
+  });
+
+  test('diff sync --html serves the sync diff and follows the branch', async () => {
+    await cli(['create', 'umbrella', 'billing']);
+    repo.commit('umbrella change', { 'app.ts': lines(10, { 2: 'umbrella' }) });
+    repo.git('push', '--quiet');
+    repo.git('checkout', '--quiet', 'beta');
+    repo.commit('beta change', { 'app.ts': lines(10, { 2: 'beta' }) });
+    repo.git('push', '--quiet');
+    await cli(['create', 'sync', '--umbrella', 'billing']);
+    repo.write('app.ts', lines(10, { 2: 'umbrella' }));
+    repo.git('add', 'app.ts');
+    repo.git('commit', '--quiet', '--no-edit');
+
+    const viewer = await serve(['diff', 'sync', '--html']);
+    const first = await viewer.data();
+
+    expect(first).toMatchObject({
+      data: { kind: 'sync', github: null, head: repo.git('rev-parse', 'HEAD') },
+    });
+
+    const head = repo.commit('manual edit', {
+      'app.ts': lines(10, { 2: 'umbrella', 8: 'edited' }),
+    });
+
+    await vi.waitFor(
+      async () => {
+        expect(await viewer.data()).toMatchObject({
+          shell: first.shell,
+          data: {
+            head,
+            sections: [{ diff: expect.stringContaining('+edited') }],
+          },
+        });
+      },
+      { timeout: 10_000 },
+    );
+  });
+
+  test('diff view serves the file and follows it', async () => {
+    const patch = (text: string) =>
+      [
+        '--- a/app.ts',
+        '+++ b/app.ts',
+        '@@ -1 +1 @@',
+        '-old',
+        `+${text}`,
+        '',
+      ].join('\n');
+
+    writeFileSync(path.join(repo.dir, 'changes.diff'), patch('first'));
+
+    const viewer = await serve(['diff', 'view', 'changes.diff']);
+
+    expect(await viewer.data()).toMatchObject({
+      data: { kind: 'patch', sections: [{ diff: patch('first') }] },
+    });
+
+    writeFileSync(path.join(repo.dir, 'changes.diff'), patch('second'));
+
+    await vi.waitFor(
+      async () => {
+        expect(await viewer.data()).toMatchObject({
+          data: { sections: [{ diff: patch('second') }] },
+        });
+      },
+      { timeout: 10_000 },
+    );
+
+    // stdin can't change, but is served too
+    const stdin = await serve(['diff', 'view', '-'], { stdin: patch('stdin') });
+
+    expect(await stdin.data()).toMatchObject({
+      data: { head: 'stdin', sections: [{ diff: patch('stdin') }] },
+    });
+
+    const port = new URL(viewer.url).port;
+    const samePort = await cli([
+      'diff',
+      'view',
+      'changes.diff',
+      '--port',
+      port,
+    ]);
+
+    expect(samePort.exitCode).toBe(EXIT.failed);
+    expect(samePort.stderr).toContain(`error: Port ${port} is in use`);
+
+    // a file is written instead of serving with --out
+    const written = await cli([
+      'diff',
+      'view',
+      'changes.diff',
+      '--out',
+      'v.html',
+    ]);
+
+    expect(written.stdout).toContain('Diff viewer written to');
+    expect(readFileSync(path.join(repo.dir, 'v.html'), 'utf8')).not.toContain(
+      'id="viewer-live"',
+    );
   });
 
   test('diff pr fails when the branch has no open PR', async () => {

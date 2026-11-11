@@ -55,6 +55,105 @@ export async function getBranchDiff({
   return { diff, files };
 }
 
+/** Untracked files are diffed one by one, past this they are left out */
+const maxUntrackedFiles = 500;
+
+/**
+ * Changes from a commit to the working tree: staged, unstaged and untracked
+ * files that are not ignored. `namesOnly` skips the diff
+ */
+export async function getWorktreeChanges({
+  git,
+  from,
+  include,
+  exclude,
+  namesOnly = false,
+}: {
+  git: Git;
+  from: string;
+  include?: readonly string[];
+  exclude?: readonly string[];
+  namesOnly?: boolean;
+}): Promise<{ diff: string; files: string[] }> {
+  const pathspec = toPathspec({ include, exclude });
+
+  const files = splitLines(
+    await git.runOk(['diff', '--name-only', from, ...pathspec]),
+  );
+  const untracked = (
+    await git.runOk([
+      'ls-files',
+      '--others',
+      '--exclude-standard',
+      '--full-name',
+      '-z',
+      ...pathspec,
+    ])
+  )
+    .split('\0')
+    // untracked repos are listed as folders
+    .filter((file) => file.length > 0 && !file.endsWith('/'))
+    .slice(0, maxUntrackedFiles);
+
+  if (namesOnly) return { diff: '', files: [...files, ...untracked] };
+
+  let diff = await git.runOk(['diff', '--no-color', from, ...pathspec]);
+
+  if (untracked.length > 0) {
+    // the paths are relative to the repo root, like the ones of the diff
+    const root = (await git.runOk(['rev-parse', '--show-toplevel'])).trim();
+
+    for (const file of untracked) {
+      const result = await git.run([
+        '-C',
+        root,
+        'diff',
+        '--no-color',
+        '--no-index',
+        '--',
+        '/dev/null',
+        file,
+      ]);
+
+      // exits with 1 when the files differ, an empty file has no diff
+      if (result.code <= 1) diff += result.stdout;
+    }
+  }
+
+  return { diff, files: [...files, ...untracked] };
+}
+
+/**
+ * Diff of the working tree against the merge base of HEAD with its parent, what
+ * the branch diff shows once everything is committed
+ */
+export async function getWorktreeDiff({
+  git,
+  parentRef,
+  include,
+  exclude,
+  ignoreImportOnly,
+}: {
+  git: Git;
+  parentRef: string;
+  include?: readonly string[];
+  exclude?: readonly string[];
+  ignoreImportOnly?: boolean;
+}): Promise<{ diff: string; files: string[] }> {
+  const changes = await getWorktreeChanges({
+    git,
+    from: (await git.mergeBase(parentRef, 'HEAD')) ?? parentRef,
+    include,
+    exclude,
+  });
+
+  return {
+    files: changes.files,
+    diff:
+      ignoreImportOnly ? removeImportOnlyChanges(changes.diff) : changes.diff,
+  };
+}
+
 /** Splits a diff into one section per file */
 export function splitFileDiffs(diff: string): string[] {
   return diff

@@ -11,6 +11,11 @@ const shaRegex = /^[\da-f]{40}$/;
 const compareEndpointRegex = /compare\/(.+)\.\.\.(.+)\?per_page=1$/;
 const issueCommentsEndpointRegex = /issues\/(\d+)\/comments$/;
 const commentEndpointRegex = /issues\/comments\/(\d+)$/;
+const graphqlPathVariableRegex = /^p\d+$/;
+/** Small pages, so the pagination is exercised */
+const viewedFilesPageSize = 2;
+
+type ViewedState = 'VIEWED' | 'DISMISSED' | 'UNVIEWED';
 
 export const testConfig: UmbrellaConfig = {
   types: { feature: 'beta', 'prod-feature': 'master' },
@@ -75,6 +80,8 @@ export type TestRepo = {
   prs: FakePr[];
   comments: { id: number; pr: number; body: string }[];
   approvals: number[];
+  /** Files marked as viewed on GitHub, by PR number and path */
+  viewedFiles: Record<number, Record<string, ViewedState>>;
   addPr: (
     pr: Partial<FakePr> & { headRefName: string; baseRefName: string },
   ) => FakePr;
@@ -139,6 +146,7 @@ export function createTestRepo(): TestRepo {
   const prs: FakePr[] = [];
   const comments: { id: number; pr: number; body: string }[] = [];
   const approvals: number[] = [];
+  const viewedFiles: Record<number, Record<string, ViewedState>> = {};
   const calls: string[][] = [];
   let nextComment = 1;
 
@@ -275,6 +283,80 @@ export function createTestRepo(): TestRepo {
       return ok('');
     }
 
+    if (cmd === 'api' && sub === 'graphql') {
+      const fields: Record<string, string> = {};
+
+      for (const [index, arg] of args.entries()) {
+        const flag = args[index - 1];
+
+        if (flag === '-f' || flag === '-F') {
+          const separator = arg.indexOf('=');
+
+          fields[arg.slice(0, separator)] = arg.slice(separator + 1);
+        }
+      }
+
+      const query = fields.query ?? '';
+
+      if (query.includes('viewerViewedState')) {
+        const queried = prs.find(
+          (item) => item.number === Number(fields.number),
+        );
+
+        if (!queried) return fail('not found');
+
+        const head =
+          queried.headRefOid ?? resolveRemoteRef(queried.headRefName);
+        const base =
+          queried.baseRefOid ?? resolveRemoteRef(queried.baseRefName);
+        const files = runGit(remoteDir, [
+          'diff',
+          '--name-only',
+          `${base}...${head}`,
+        ])
+          .split('\n')
+          .filter((file) => file.length > 0);
+        const start = Number(fields.cursor ?? 0);
+        const end = start + viewedFilesPageSize;
+
+        return ok(
+          JSON.stringify({
+            data: {
+              repository: {
+                pullRequest: {
+                  id: `PR_${queried.number}`,
+                  files: {
+                    pageInfo: {
+                      hasNextPage: end < files.length,
+                      endCursor: String(end),
+                    },
+                    nodes: files.slice(start, end).map((file) => ({
+                      path: file,
+                      viewerViewedState:
+                        viewedFiles[queried.number]?.[file] ?? 'UNVIEWED',
+                    })),
+                  },
+                },
+              },
+            },
+          }),
+        );
+      }
+
+      if (query.includes('FileAsViewed')) {
+        const number = Number((fields.id ?? '').replace('PR_', ''));
+        const state =
+          query.includes('unmarkFileAsViewed') ? 'UNVIEWED' : 'VIEWED';
+        const prFiles = (viewedFiles[number] ??= {});
+
+        for (const [name, value] of Object.entries(fields)) {
+          if (graphqlPathVariableRegex.test(name)) prFiles[value] = state;
+        }
+
+        return ok('{}');
+      }
+    }
+
     if (cmd === 'api') {
       const method = getFlag(args, '--method');
       const endpoint = args.find((arg) => arg.startsWith('repos/')) ?? '';
@@ -336,6 +418,7 @@ export function createTestRepo(): TestRepo {
     prs,
     comments,
     approvals,
+    viewedFiles,
     addPr,
     exec,
     calls,

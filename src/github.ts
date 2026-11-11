@@ -30,6 +30,24 @@ export type PrRefs = {
   isOpen: boolean;
 };
 
+/** `DISMISSED`: viewed, but the file changed since */
+export type FileViewedState = 'VIEWED' | 'DISMISSED' | 'UNVIEWED';
+
+const viewedFilesQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      id
+      files(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { path viewerViewedState }
+      }
+    }
+  }
+}`;
+
+/** Files marked per request, each one is a mutation of the request */
+const viewedFilesBatchSize = 50;
+
 export function createGitHub({
   exec,
   cwd,
@@ -321,6 +339,110 @@ export function createGitHub({
         ],
         `<!-- ${marker} -->\n\n${body}`,
       );
+    },
+
+    /**
+     * Viewed state of the PR files of the authenticated user, as the checkboxes
+     * of the PR files on GitHub, and the PR id used to change them
+     */
+    async getPrViewedFiles(
+      prNumber: number,
+    ): Promise<{ id: string; files: Record<string, FileViewedState> }> {
+      const [owner = '', name = ''] = (await getRepo()).split('/');
+      const files: Record<string, FileViewedState> = {};
+      let id = '';
+      let cursor: string | null = null;
+
+      do {
+        const out: string = await runOk([
+          'api',
+          'graphql',
+          '-f',
+          `query=${viewedFilesQuery}`,
+          '-f',
+          `owner=${owner}`,
+          '-f',
+          `name=${name}`,
+          '-F',
+          `number=${prNumber}`,
+          ...(cursor !== null ? ['-f', `cursor=${cursor}`] : []),
+        ]);
+
+        const response: unknown = JSON.parse(out);
+        const data = isRecord(response) ? response.data : undefined;
+        const repository = isRecord(data) ? data.repository : undefined;
+        const pr = isRecord(repository) ? repository.pullRequest : undefined;
+
+        if (
+          !isRecord(pr) ||
+          typeof pr.id !== 'string' ||
+          !isRecord(pr.files) ||
+          !Array.isArray(pr.files.nodes)
+        ) {
+          throw new Error(`Could not get the viewed files of #${prNumber}`);
+        }
+
+        id = pr.id;
+
+        for (const node of pr.files.nodes) {
+          if (!isRecord(node) || typeof node.path !== 'string') continue;
+
+          files[node.path] =
+            (
+              node.viewerViewedState === 'VIEWED' ||
+              node.viewerViewedState === 'DISMISSED'
+            ) ?
+              node.viewerViewedState
+            : 'UNVIEWED';
+        }
+
+        const { pageInfo } = pr.files;
+
+        cursor =
+          (
+            isRecord(pageInfo) &&
+            pageInfo.hasNextPage === true &&
+            typeof pageInfo.endCursor === 'string'
+          ) ?
+            pageInfo.endCursor
+          : null;
+      } while (cursor !== null);
+
+      return { id, files };
+    },
+
+    /** Marks or unmarks PR files as viewed by the authenticated user */
+    async setPrFilesViewed(
+      prId: string,
+      paths: readonly string[],
+      viewed: boolean,
+    ): Promise<void> {
+      const mutation = viewed ? 'markFileAsViewed' : 'unmarkFileAsViewed';
+
+      for (let start = 0; start < paths.length; start += viewedFilesBatchSize) {
+        const batch = paths.slice(start, start + viewedFilesBatchSize);
+        const query = [
+          `mutation($id: ID!, ${batch.map((_, index) => `$p${index}: String!`).join(', ')}) {`,
+          ...batch.map(
+            (_, index) =>
+              `  m${index}: ${mutation}(input: { pullRequestId: $id, path: $p${index} }) { clientMutationId }`,
+          ),
+          '}',
+        ].join('\n');
+
+        await runOk([
+          'api',
+          'graphql',
+          '-f',
+          `query=${query}`,
+          '-f',
+          `id=${prId}`,
+          ...batch.flatMap((filePath, index) => [
+            '-f',
+            `p${index}=${filePath}`,
+          ]),
+        ]);
+      }
     },
 
     async approvePr(prNumber: number, body: string) {

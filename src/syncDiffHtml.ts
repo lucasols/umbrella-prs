@@ -16,15 +16,61 @@ const treesModuleUrl =
 const fontsUrl =
   'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap';
 
-/**
- * Standalone page that renders the sync diff with `@pierre/diffs`. Files can be
- * marked as viewed, saved in the browser per sync PR (the merged branches)
- * until the file diff changes
- */
-export function renderSyncDiffHtml(
+/** Storage keys of the viewer preferences, shared by every diff */
+export const viewerPrefKeys = [
+  'umbrella-prs:sync-diff-style',
+  'umbrella-prs:sync-diff-mode',
+  'umbrella-prs:sync-diff-hide-imports',
+  'umbrella-prs:sync-diff-wrap',
+  'umbrella-prs:sync-diff-sidebar-width',
+  'umbrella-prs:sync-diff-theme',
+  'umbrella-prs:sync-diff-github-sync',
+] as const;
+
+export type ViewerGitHub = {
+  pr: number;
+  /** The PR head commit on GitHub, as known locally */
+  head: string;
+  /** Files of the diff that differ from the PR head on GitHub, they are not synced */
+  unpushed: string[];
+};
+
+type ViewerSection = {
+  leftLabel: string;
+  rightLabel: string;
+  compareTo: string;
+  conflictedFiles: string[];
+  diff: string;
+  contents: SyncDiffContents | null;
+  importOnlyFiles: string[];
+};
+
+type ViewerData = {
+  kind: 'sync' | 'patch';
+  head: string;
+  /** Storage keys of the viewed files and of the selected file */
+  storage: { viewed: string; current: string };
+  github: ViewerGitHub | null;
+  base: ViewerSection | null;
+  sections: ViewerSection[];
+};
+
+/** A viewer page, rendered with `renderViewerPage` */
+export type ViewerPage = {
+  title: string;
+  heading: string;
+  /** html of the view switcher */
+  views: string[];
+  /** html */
+  subtitle: string;
+  data: ViewerData;
+};
+
+/** The sync diff as a viewer page */
+export function buildSyncDiffPage(
   result: SyncDiffResult,
   { base }: { base?: SyncBaseDiff } = {},
-): string {
+): ViewerPage {
   const labels = [
     ...new Set(
       result.sections.map(
@@ -33,7 +79,7 @@ export function renderSyncDiffHtml(
     ),
   ].join(', ');
 
-  return renderViewerHtml({
+  return {
     title: `Sync diff ${result.head.slice(0, 12)}`,
     heading: 'Sync diff',
     views:
@@ -60,6 +106,7 @@ export function renderSyncDiffHtml(
         )}`,
         current: `umbrella-prs:sync-diff-current:${result.head}`,
       },
+      github: null,
       base:
         base ?
           viewerSection({
@@ -72,26 +119,46 @@ export function renderSyncDiffHtml(
         : null,
       sections: result.sections.map((section) => viewerSection(section)),
     },
-  });
+  };
+}
+
+/**
+ * Standalone page that renders the sync diff with `@pierre/diffs`. Files can be
+ * marked as viewed, saved in the browser per sync PR (the merged branches)
+ * until the file diff changes
+ */
+export function renderSyncDiffHtml(
+  result: SyncDiffResult,
+  options: { base?: SyncBaseDiff } = {},
+): string {
+  return renderViewerPage(buildSyncDiffPage(result, options));
 }
 
 const mboxCommitRegex = /^From ([0-9a-f]{40}) /m;
 const patchSubjectRegex = /^Subject: (?:\[[^\]]*\] *)?(.*)$/m;
 
+export type PatchPageOptions = {
+  name: string;
+  /** Identifies the diff in the saved viewer state, defaults to `name` */
+  id?: string;
+  diff: string;
+  /** Shown after the name, e.g. what the diff is following */
+  note?: string;
+  /** PR whose viewed files are synced with GitHub, only when the page is served */
+  github?: ViewerGitHub;
+};
+
 /**
- * Standalone viewer of a `.diff` or `.patch` file, one section per commit for
+ * A `.diff` or `.patch` file as a viewer page, one section per commit for
  * `git format-patch` series. Viewed files are saved per `id`
  */
-export function renderPatchHtml({
+export function buildPatchPage({
   name,
   id = name,
   diff,
-}: {
-  name: string;
-  /** Identifies the diff in the browser storage, defaults to `name` */
-  id?: string;
-  diff: string;
-}): string {
+  note,
+  github,
+}: PatchPageOptions): ViewerPage {
   const commits = diff
     .split(new RegExp(`(?=${mboxCommitRegex.source})`, 'm'))
     .filter((part) => mboxCommitRegex.test(part));
@@ -107,11 +174,11 @@ export function renderPatchHtml({
       )
     : [viewerSection({ leftLabel: '', rightLabel: name, compareTo: '', diff })];
 
-  return renderViewerHtml({
+  return {
     title: `Diff ${name}`,
     heading: 'Diff',
     views: [],
-    subtitle: `<code>${escapeHtml(name)}</code>`,
+    subtitle: `<code>${escapeHtml(name)}</code>${note ? ` ${escapeHtml(note)}` : ''}`,
     data: {
       kind: 'patch',
       head: id,
@@ -119,21 +186,17 @@ export function renderPatchHtml({
         viewed: `umbrella-prs:diff-viewed-files:${id}`,
         current: `umbrella-prs:diff-current:${id}`,
       },
+      github: github ?? null,
       base: null,
       sections,
     },
-  });
+  };
 }
 
-type ViewerSection = {
-  leftLabel: string;
-  rightLabel: string;
-  compareTo: string;
-  conflictedFiles: string[];
-  diff: string;
-  contents: SyncDiffContents | null;
-  importOnlyFiles: string[];
-};
+/** Standalone viewer of a `.diff` or `.patch` file, see `buildPatchPage` */
+export function renderPatchHtml(options: PatchPageOptions): string {
+  return renderViewerPage(buildPatchPage(options));
+}
 
 function viewerSection({
   leftLabel,
@@ -161,29 +224,34 @@ function viewerSection({
   };
 }
 
-type ViewerData = {
-  kind: 'sync' | 'patch';
-  head: string;
-  /** localStorage keys of the viewed files and of the selected file */
-  storage: { viewed: string; current: string };
-  base: ViewerSection | null;
-  sections: ViewerSection[];
+/**
+ * What a served page can't update in place, the page is reloaded when it
+ * changes
+ */
+export function getViewerShell(page: ViewerPage): string {
+  return JSON.stringify([
+    page.heading,
+    page.views,
+    page.data.kind,
+    page.data.storage.viewed,
+    page.data.base !== null,
+    page.data.github !== null,
+  ]);
+}
+
+/** Set when the page is served: it follows the repo and the server saves its state */
+export type ViewerLive = {
+  /** Changes every time the page changes */
+  revision: string;
+  /** Saved viewer state, by storage key */
+  storage: Record<string, unknown>;
 };
 
-function renderViewerHtml({
-  title,
-  heading,
-  views,
-  subtitle,
-  data,
-}: {
-  title: string;
-  heading: string;
-  views: string[];
-  /** html */
-  subtitle: string;
-  data: ViewerData;
-}): string {
+/** The page as html, standalone unless `live` is set by the server */
+export function renderViewerPage(
+  { title, heading, views, subtitle, data }: ViewerPage,
+  { live }: { live?: ViewerLive } = {},
+): string {
   return [
     '<!doctype html>',
     '<html lang="en">',
@@ -203,10 +271,15 @@ function renderViewerHtml({
     '<div class="title">',
     `<strong>${escapeHtml(heading)}</strong>`,
     ...views,
-    `<span class="muted">${subtitle}</span>`,
+    `<span id="subtitle" class="muted">${subtitle}</span>`,
+    '<span id="live" class="live hidden"></span>',
     '</div>',
     '<div class="actions">',
     '<span id="progress" class="muted"></span>',
+    '<span id="github" class="github hidden">',
+    '<button type="button" id="github-toggle">GitHub sync</button>',
+    '<span id="github-status" class="muted"></span>',
+    '</span>',
     '<span id="nav" class="nav">',
     '<button type="button" id="prev" title="Previous file">← Prev <kbd class="shortcut">p</kbd></button>',
     '<span id="position" class="muted"></span>',
@@ -233,6 +306,11 @@ function renderViewerHtml({
     '<main id="review"></main>',
     '</div>',
     `<script type="application/json" id="sync-diff-data">${serializeJson(data)}</script>`,
+    ...(live ?
+      [
+        `<script type="application/json" id="viewer-live">${serializeJson({ ...live, shell: getViewerShell({ title, heading, views, subtitle, data }) })}</script>`,
+      ]
+    : []),
     `<script type="module">import { CodeView, parsePatchFiles, resolveTheme } from '${diffsModuleUrl}';\nimport { colorUtils, normalizeThemeColors } from '${themingColorModuleUrl}';\nimport { createFileTreeIconResolver, getBuiltInSpriteSheet } from '${treesModuleUrl}';\n${script}</script>`,
     '</body>',
     '</html>',
@@ -519,6 +597,11 @@ body.single .shortcut { display: inline-block; }
 .summary { padding: 12px 16px 0; }
 .summary p { margin: 0 0 8px; }
 .empty { padding: 24px 16px; color: var(--muted); }
+.live, .github { display: inline-flex; gap: 6px; align-items: center; }
+.live { font-size: 12px; }
+.live::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--addition); }
+.live.offline::before { background: var(--deletion); }
+.github .failed { color: var(--deletion); }
 @media (max-width: 720px) {
   .layout { flex-direction: column; }
   #files { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--border-opaque); }
@@ -527,28 +610,63 @@ body.single .shortcut { display: inline-block; }
 `;
 
 const script = String.raw`
-const data = JSON.parse(document.getElementById('sync-diff-data').textContent);
+let data = JSON.parse(document.getElementById('sync-diff-data').textContent);
+// set when the page is served: it follows the repo and the server saves the state
+const live = JSON.parse(document.getElementById('viewer-live')?.textContent ?? 'null');
 // the umbrella diff on top of the base after the sync, or the sync changes
 const baseView = location.hash === '#base' && data.base !== null;
-const sections = baseView ? [data.base] : data.sections;
+let sections = [];
 
 for (const link of document.querySelectorAll('.views a')) {
   link.classList.toggle('active', link.dataset.view === (baseView ? 'base' : 'sync'));
 }
 
-window.addEventListener('hashchange', () => location.reload());
+window.addEventListener('hashchange', () => void reloadPage());
 const viewName = baseView ? 'base' : 'sync';
 const viewedKey = data.storage.viewed;
 const styleKey = 'umbrella-prs:sync-diff-style';
 const modeKey = 'umbrella-prs:sync-diff-mode';
 // the selected file, kept across modes and views
-const currentKey = data.storage.current;
+let currentKey = data.storage.current;
 const importsKey = 'umbrella-prs:sync-diff-hide-imports';
 const wrapKey = 'umbrella-prs:sync-diff-wrap';
 const sidebarWidthKey = 'umbrella-prs:sync-diff-sidebar-width';
 const themeKey = 'umbrella-prs:sync-diff-theme';
+const githubSyncKey = 'umbrella-prs:sync-diff-github-sync';
+
+// state changes waiting to be sent to the server
+const pendingWrites = {};
+let writeTimer = 0;
+
+function flushStorage() {
+  clearTimeout(writeTimer);
+  writeTimer = 0;
+
+  const keys = Object.keys(pendingWrites);
+  if (keys.length === 0) return Promise.resolve();
+
+  const body = JSON.stringify({ entries: pendingWrites });
+  for (const key of keys) delete pendingWrites[key];
+
+  // keepalive requests outlive the page, but have a size limit
+  return fetch('/storage', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body,
+    keepalive: body.length < 60000,
+  }).catch(() => {});
+}
+
+async function reloadPage() {
+  await flushStorage();
+  location.reload();
+}
+
+window.addEventListener('pagehide', () => void flushStorage());
 
 function readStorage(key, fallback) {
+  if (live) return Object.hasOwn(live.storage, key) ? live.storage[key] : fallback;
+
   try {
     const value = localStorage.getItem(key);
     return value === null ? fallback : JSON.parse(value);
@@ -558,6 +676,13 @@ function readStorage(key, fallback) {
 }
 
 function writeStorage(key, value) {
+  if (live) {
+    live.storage[key] = value;
+    pendingWrites[key] = value;
+    writeTimer ||= setTimeout(flushStorage, 200);
+    return;
+  }
+
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {
@@ -603,39 +728,72 @@ let theme = themes.find((option) => option.id === readStorage(themeKey, null)) ?
 // light or dark, by theme name, known once the theme loads
 const themeTypes = new Map();
 let current = null;
-const multipleSections = sections.length > 1;
+let multipleSections = false;
+let importOnlyCount = 0;
 
-const entries = [];
-const entriesByDiff = new Map();
+let entries = [];
+let entriesByDiff = new Map();
+let entriesById = new Map();
+// the hash of the diff of each file by view, so marking a file marks it in both
+let viewHashes = {};
+// item versions, the viewer renders an item again when its version changes
+let versionCount = 0;
 
-const usedIds = new Set();
+// the files of the data. Files whose diff did not change keep their diff object
+// and version, so the viewer keeps them as they are when the page updates
+function loadEntries() {
+  const previousById = entriesById;
 
-sections.forEach((section, sectionIndex) => {
-  if (!section.diff) return;
+  sections = baseView ? [data.base] : data.sections;
+  multipleSections = sections.length > 1;
+  entries = [];
+  entriesByDiff = new Map();
 
-  const patches = parsePatchFiles(section.diff + '\n', 'section-' + sectionIndex);
+  const usedIds = new Set();
 
-  for (const fileDiff of patches.flatMap((patch) => patch.files)) {
-    // a plain diff can have the same file more than once
-    let id = sectionIndex + ':' + fileDiff.name;
-    for (let count = 2; usedIds.has(id); count++) id = sectionIndex + ':' + fileDiff.name + '#' + count;
-    usedIds.add(id);
+  sections.forEach((section, sectionIndex) => {
+    if (!section.diff) return;
 
-    const entry = {
-      id,
-      section,
-      fileDiff,
-      conflicted: section.conflictedFiles.includes(fileDiff.name),
-      importOnly: section.importOnlyFiles.includes(fileDiff.name),
-      toggles: [],
-      row: null,
-    };
-    entries.push(entry);
-    entriesByDiff.set(fileDiff, entry);
-  }
-});
+    const patches = parsePatchFiles(section.diff + '\n', 'section-' + sectionIndex);
 
-const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+    for (const parsed of patches.flatMap((patch) => patch.files)) {
+      // a plain diff can have the same file more than once
+      let id = sectionIndex + ':' + parsed.name;
+      for (let count = 2; usedIds.has(id); count++) id = sectionIndex + ':' + parsed.name + '#' + count;
+      usedIds.add(id);
+
+      const json = JSON.stringify({ ...parsed, cacheKey: undefined });
+      const signature = hash(json) + ':' + json.length;
+      const previous = previousById.get(id);
+      const unchanged = previous !== undefined && previous.signature === signature;
+      // the viewer renders a diff again when its cache key changes
+      const fileDiff = unchanged ? previous.fileDiff : { ...parsed, cacheKey: id + ':' + signature };
+
+      const entry = {
+        id,
+        section,
+        fileDiff,
+        signature,
+        version: unchanged ? previous.version : ++versionCount,
+        collapsed: unchanged ? previous.collapsed : null,
+        conflicted: section.conflictedFiles.includes(fileDiff.name),
+        importOnly: section.importOnlyFiles.includes(fileDiff.name),
+        toggles: [],
+        row: null,
+      };
+      entries.push(entry);
+      entriesByDiff.set(fileDiff, entry);
+    }
+  });
+
+  entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  importOnlyCount = entries.filter((entry) => entry.importOnly).length;
+
+  viewHashes = { [viewName]: hashFiles(entries.map((entry) => entry.fileDiff)) };
+
+  if (baseView) viewHashes.sync = hashFiles(parseViewFiles(data.sections, 'hash-sync-'));
+  else if (data.base) viewHashes.base = hashFiles(parseViewFiles([data.base], 'hash-base-'));
+}
 
 function hashFileDiff(fileDiff) {
   return hash(fileDiff.deletionLines.join('\n') + '\0' + fileDiff.additionLines.join('\n'));
@@ -658,13 +816,7 @@ function parseViewFiles(viewSections, prefix) {
   );
 }
 
-// the hashes of the other view too, so marking a file marks it in both
-const viewHashes = {
-  [viewName]: hashFiles(entries.map((entry) => entry.fileDiff)),
-};
-
-if (baseView) viewHashes.sync = hashFiles(parseViewFiles(data.sections, 'hash-sync-'));
-else if (data.base) viewHashes.base = hashFiles(parseViewFiles([data.base], 'hash-base-'));
+loadEntries();
 
 function isViewed(entry) {
   const name = entry.fileDiff.name;
@@ -817,14 +969,19 @@ function updateProgress() {
 // files marked as viewed, by action, so the last marks can be undone
 const viewedHistory = [];
 
-function setViewed(targets, value) {
-  if (value) viewedHistory.push(targets);
+// fromGithub: the files were marked or unmarked in the PR on GitHub
+function setViewed(targets, value, { fromGithub = false } = {}) {
+  if (value && !fromGithub) viewedHistory.push(targets);
 
   for (const entry of targets) {
     const name = entry.fileDiff.name;
 
     if (value) {
-      viewed[name] = { sync: viewHashes.sync?.get(name), base: viewHashes.base?.get(name) };
+      viewed[name] = {
+        sync: viewHashes.sync?.get(name),
+        base: viewHashes.base?.get(name),
+        ...(fromGithub ? { github: true } : {}),
+      };
     } else {
       delete viewed[name];
     }
@@ -835,7 +992,19 @@ function setViewed(targets, value) {
 
   writeStorage(viewedKey, viewed);
 
+  if (!fromGithub) {
+    sendGithubViewed(
+      githubPaths(targets).filter((name) => (githubStates.get(name) === 'VIEWED') !== value),
+      value,
+    );
+  }
+
   if (mode === 'single') {
+    if (fromGithub) {
+      render({ anchor: { scrollTop: root.scrollTop } });
+      return;
+    }
+
     if (value && current && targets.includes(current)) setCurrent(nextUnviewed(current));
     render();
     return;
@@ -844,7 +1013,9 @@ function setViewed(targets, value) {
   for (const entry of targets) {
     const item = viewer.getItem(entry.id);
     if (item && item.collapsed !== value) {
-      viewer.updateItem({ ...item, collapsed: value, version: (item.version ?? 0) + 1 });
+      entry.version = ++versionCount;
+      entry.collapsed = value;
+      viewer.updateItem({ ...item, collapsed: value, version: entry.version });
     }
   }
 
@@ -910,6 +1081,8 @@ function move(offset) {
 }
 
 const folders = [];
+// folders collapsed in the tree, kept when the page updates
+const collapsedFolders = new Set();
 // section titles, hidden while searching when no file of the section matches
 const sectionHeaders = [];
 // files in the order of the tree, so the diffs follow it
@@ -994,14 +1167,25 @@ function byName(a, b) {
   return a.name.localeCompare(b.name);
 }
 
-function renderTree(node, depth) {
+function renderTree(node, depth, parentKey) {
   const nodes = [];
 
   for (const child of [...node.folders.values()].sort(byName)) {
     const folder = compactFolder(child);
+    const key = parentKey + folder.name + '/';
+    const startCollapsed = collapsedFolders.has(key);
     const toggle = el('input', { type: 'checkbox' });
-    const caret = el('button', { type: 'button', className: 'caret', textContent: '▾', title: 'Collapse' });
-    const children = el('div', { className: 'children' }, renderTree(folder, depth + 1));
+    const caret = el('button', {
+      type: 'button',
+      className: 'caret',
+      textContent: startCollapsed ? '▸' : '▾',
+      title: startCollapsed ? 'Expand' : 'Collapse',
+    });
+    const children = el(
+      'div',
+      { className: 'children' + (startCollapsed ? ' collapsed' : '') },
+      renderTree(folder, depth + 1, key),
+    );
     const row = el('div', { className: 'row folder' }, [
       caret,
       el('label', { className: 'hit', title: 'Mark the folder as viewed' }, [toggle]),
@@ -1019,6 +1203,8 @@ function renderTree(node, depth) {
       const collapsed = children.classList.toggle('collapsed');
       caret.textContent = collapsed ? '▸' : '▾';
       caret.title = collapsed ? 'Expand' : 'Collapse';
+      if (collapsed) collapsedFolders.add(key);
+      else collapsedFolders.delete(key);
     });
 
     nodes.push(row, children);
@@ -1045,7 +1231,12 @@ function renderTree(node, depth) {
 }
 
 function renderSidebar() {
-  for (const section of sections) {
+  folders.length = 0;
+  sectionHeaders.length = 0;
+  treeOrder.length = 0;
+  tree.replaceChildren();
+
+  for (const [sectionIndex, section] of sections.entries()) {
     const sectionEntries = entries.filter((entry) => entry.section === section);
     const nodes = [];
 
@@ -1063,16 +1254,17 @@ function renderSidebar() {
     }
 
     sectionHeaders.push({ nodes, entries: sectionEntries });
-    tree.append(...nodes, ...renderTree(buildTree(sectionEntries), 0));
+    tree.append(...nodes, ...renderTree(buildTree(sectionEntries), 0, sectionIndex + ':'));
   }
 
   tree.append(noMatches);
 }
 
 const emptyNote = el('p', { className: 'empty hidden' });
+const summary = el('div', { className: 'summary' });
 
 function renderSummary() {
-  const summary = el('div', { className: 'summary' });
+  summary.replaceChildren();
 
   if (baseView) {
     summary.append(
@@ -1083,7 +1275,7 @@ function renderSummary() {
       emptyNote,
     );
 
-    return summary;
+    return;
   }
 
   if (data.kind === 'patch') {
@@ -1095,7 +1287,7 @@ function renderSummary() {
       emptyNote,
     );
 
-    return summary;
+    return;
   }
 
   for (const section of sections) {
@@ -1115,8 +1307,6 @@ function renderSummary() {
   }
 
   summary.append(emptyNote);
-
-  return summary;
 }
 
 async function loadDiffFiles(fileDiff) {
@@ -1136,7 +1326,14 @@ async function loadDiffFiles(fileDiff) {
   };
 }
 
-const summary = renderSummary();
+renderSummary();
+
+// the options that depend on the data
+function dataOptionsKey() {
+  return sections.some((section) => section.contents) + ':' + multipleSections;
+}
+
+let optionsKey = dataOptionsKey();
 
 function viewerOptions() {
   return {
@@ -1179,11 +1376,28 @@ const nextButton = document.getElementById('next');
 const undoButton = document.getElementById('undo');
 const position = document.getElementById('position');
 const importsToggle = document.getElementById('hide-imports');
-const importOnlyCount = entries.filter((entry) => entry.importOnly).length;
 
-let itemVersion = 0;
+// the file at the top of the view and how far it is scrolled, restored when
+// the page updates
+function scrollAnchor() {
+  const top = mode === 'all' ? topEntry() : null;
+  const itemTop = top ? viewer.getTopForItem(top.id) : undefined;
 
-function render() {
+  return itemTop === undefined
+    ? { scrollTop: root.scrollTop }
+    : { id: top.id, offset: root.scrollTop - itemTop, scrollTop: root.scrollTop };
+}
+
+function restoreScroll(anchor) {
+  // after CodeView lays out the new items
+  requestAnimationFrame(() => {
+    const itemTop = anchor.id === undefined ? undefined : viewer.getTopForItem(anchor.id);
+    root.scrollTop = itemTop === undefined ? anchor.scrollTop : itemTop + anchor.offset;
+  });
+}
+
+// anchor: keeps the scroll position and the files that did not change as they are
+function render({ anchor = null } = {}) {
   const visible = visibleEntries();
 
   if (mode === 'single' && (!current || !isVisible(current))) {
@@ -1194,16 +1408,16 @@ function render() {
 
   const items = mode === 'single' ? (current ? [current] : []) : visible;
 
-  itemVersion++;
-  viewer.setItems(items.map((entry) => ({
-    id: entry.id,
-    type: 'diff',
-    fileDiff: entry.fileDiff,
-    collapsed: mode === 'all' && isViewed(entry),
-    version: itemVersion,
-  })));
+  viewer.setItems(items.map((entry) => {
+    const collapsed = mode === 'all' && isViewed(entry);
+    if (!anchor || entry.collapsed !== collapsed) entry.version = ++versionCount;
+    entry.collapsed = collapsed;
 
-  if (mode === 'single') root.scrollTop = 0;
+    return { id: entry.id, type: 'diff', fileDiff: entry.fileDiff, collapsed, version: entry.version };
+  }));
+
+  if (anchor) restoreScroll(anchor);
+  else if (mode === 'single') root.scrollTop = 0;
   else if (current && isVisible(current)) scrollToCurrent();
 
   emptyNote.textContent = entries.length > 0 ? 'All the changes are import-only.'
@@ -1326,9 +1540,13 @@ prevButton.addEventListener('click', () => move(-1));
 nextButton.addEventListener('click', () => move(1));
 undoButton.addEventListener('click', undoViewed);
 
-document.getElementById('imports').classList.toggle('hidden', importOnlyCount === 0);
-document.getElementById('imports-label').textContent =
-  'Hide import-only (' + importOnlyCount + ')';
+function updateImportsToggle() {
+  document.getElementById('imports').classList.toggle('hidden', importOnlyCount === 0);
+  document.getElementById('imports-label').textContent =
+    'Hide import-only (' + importOnlyCount + ')';
+}
+
+updateImportsToggle();
 importsToggle.checked = hideImportOnly;
 importsToggle.addEventListener('change', () => {
   hideImportOnly = importsToggle.checked;
@@ -1423,6 +1641,276 @@ document.addEventListener('keydown', (event) => {
   else if (event.key === 'u') undoViewed();
 });
 
+const githubBox = document.getElementById('github');
+const githubToggle = document.getElementById('github-toggle');
+const githubStatus = document.getElementById('github-status');
+let githubSync = readStorage(githubSyncKey, true);
+// viewed state on GitHub of the PR files by path, null until it loads
+let githubStates = null;
+let githubError = null;
+let githubLoadedAt = 0;
+// requests run one at a time, so the marks reach GitHub in order
+let githubQueue = Promise.resolve();
+// marks sent to GitHub, a response from before a mark is outdated
+let githubMarks = 0;
+
+function githubEnabled() {
+  return live !== null && data.github !== null && githubSync;
+}
+
+async function githubRequest(options) {
+  const response = await fetch('/github/viewed', options);
+  const body = await response.json();
+  if (!response.ok) throw new Error(body.error ?? 'The GitHub request failed');
+  return body;
+}
+
+// files of the PR on GitHub whose local diff is what GitHub has, files with
+// changes that were not pushed are not synced
+function githubPaths(targets) {
+  if (!githubEnabled() || githubStates === null) return [];
+
+  const unpushed = new Set(data.github.unpushed);
+
+  return [...new Set(targets.map((entry) => entry.fileDiff.name))].filter(
+    (name) => githubStates.has(name) && !unpushed.has(name),
+  );
+}
+
+function sendGithubViewed(paths, value) {
+  if (paths.length === 0) return;
+
+  githubMarks++;
+  for (const path of paths) githubStates.set(path, value ? 'VIEWED' : 'UNVIEWED');
+
+  githubQueue = githubQueue.then(async () => {
+    try {
+      await githubRequest({
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ paths, viewed: value }),
+      });
+      githubError = null;
+
+      if (value) {
+        for (const path of paths) {
+          if (viewed[path]) viewed[path].github = true;
+        }
+        writeStorage(viewedKey, viewed);
+      }
+    } catch (error) {
+      githubError = error.message;
+      // unknown until the next load, which sends the marks again
+      for (const path of paths) githubStates?.delete(path);
+    }
+
+    updateGithubStatus();
+  });
+}
+
+// makes both sides match: files viewed on GitHub are marked here and files
+// viewed here are marked on GitHub. Files marked on both sides and then
+// unmarked on GitHub are unmarked here
+function reconcileGithub() {
+  if (!githubEnabled() || githubStates === null) return;
+
+  const unpushed = new Set(data.github.unpushed);
+  const mark = new Set();
+  const marked = [];
+  const unmarked = [];
+  let confirmed = false;
+
+  for (const entry of entries) {
+    const name = entry.fileDiff.name;
+    const state = githubStates.get(name);
+    if (state === undefined || unpushed.has(name)) continue;
+
+    if (!isViewed(entry)) {
+      if (state === 'VIEWED') marked.push(entry);
+    } else if (state === 'VIEWED') {
+      if (!viewed[name].github) {
+        viewed[name].github = true;
+        confirmed = true;
+      }
+    } else if (state === 'UNVIEWED' && viewed[name].github) {
+      unmarked.push(entry);
+    } else {
+      // not marked yet, or dismissed by a push with the changes viewed here
+      mark.add(name);
+    }
+  }
+
+  if (confirmed) writeStorage(viewedKey, viewed);
+  if (marked.length > 0) setViewed(marked, true, { fromGithub: true });
+  if (unmarked.length > 0) setViewed(unmarked, false, { fromGithub: true });
+  sendGithubViewed([...mark], true);
+  updateGithubStatus();
+}
+
+function loadGithubViewed() {
+  if (!githubEnabled()) return;
+
+  githubLoadedAt = Date.now();
+  githubQueue = githubQueue.then(async () => {
+    const marks = githubMarks;
+
+    try {
+      const body = await githubRequest();
+      if (marks !== githubMarks || !githubEnabled()) return;
+
+      githubStates = new Map(Object.entries(body.files));
+      githubError = null;
+      reconcileGithub();
+    } catch (error) {
+      githubError = error.message;
+    }
+
+    updateGithubStatus();
+  });
+}
+
+function updateGithubStatus() {
+  const available = live !== null && data.github !== null;
+  githubBox.classList.toggle('hidden', !available);
+  if (!available) return;
+
+  githubToggle.setAttribute('aria-pressed', String(githubSync));
+  githubToggle.title = githubSync
+    ? 'Files marked as viewed here are marked as viewed in PR #' + data.github.pr + ' on GitHub, and the other way around. Click to stop'
+    : 'Sync the viewed files with PR #' + data.github.pr + ' on GitHub';
+  githubStatus.classList.toggle('failed', githubSync && githubError !== null);
+
+  if (!githubSync) {
+    githubStatus.textContent = 'off';
+    githubStatus.title = '';
+  } else if (githubError !== null) {
+    githubStatus.textContent = 'failed';
+    githubStatus.title = githubError;
+  } else if (githubStates === null) {
+    githubStatus.textContent = 'loading…';
+    githubStatus.title = '';
+  } else {
+    const unpushed = new Set(data.github.unpushed);
+    const names = [...new Set(entries.map((entry) => entry.fileDiff.name))];
+    const synced = names.filter((name) => githubStates.has(name) && !unpushed.has(name));
+    const notPushed = names.filter((name) => unpushed.has(name));
+    githubStatus.textContent =
+      synced.filter((name) => githubStates.get(name) === 'VIEWED').length + ' / ' + synced.length + ' viewed on GitHub' +
+      (notPushed.length > 0 ? ', ' + notPushed.length + ' not pushed' : '');
+    githubStatus.title = notPushed.length > 0
+      ? 'Files with changes that were not pushed are synced after the push:\n' + notPushed.join('\n')
+      : '';
+  }
+}
+
+githubToggle.addEventListener('click', () => {
+  githubSync = !githubSync;
+  writeStorage(githubSyncKey, githubSync);
+  githubError = null;
+  updateGithubStatus();
+  loadGithubViewed();
+});
+
+// picks up the files marked on GitHub meanwhile
+window.addEventListener('focus', () => {
+  if (Date.now() - githubLoadedAt > 15000) loadGithubViewed();
+});
+
+const liveBadge = document.getElementById('live');
+const subtitle = document.getElementById('subtitle');
+
+function setLiveStatus(connected) {
+  liveBadge.classList.remove('hidden');
+  liveBadge.classList.toggle('offline', !connected);
+  liveBadge.textContent = connected ? 'Live' : 'Disconnected';
+  liveBadge.title = connected
+    ? 'The diff updates when the repo changes'
+    : 'The viewer server stopped, run the command again to follow the repo';
+}
+
+// shows the new data in place, keeping the scroll position and the selected file
+function applyData(next) {
+  const anchor = scrollAnchor();
+  const previous = current;
+  const history = viewedHistory.map((targets) => targets.map((entry) => entry.id));
+  const githubHead = data.github?.head;
+
+  live.revision = next.revision;
+  data = next.data;
+  document.title = next.title;
+  subtitle.innerHTML = next.subtitle;
+  currentKey = data.storage.current;
+
+  loadEntries();
+  renderSidebar();
+  renderSummary();
+  updateImportsToggle();
+
+  viewedHistory.splice(
+    0,
+    viewedHistory.length,
+    ...history
+      .map((ids) => ids.flatMap((id) => entriesById.get(id) ?? []))
+      .filter((targets) => targets.length > 0),
+  );
+  current = previous === null ? null
+    : entriesById.get(previous.id) ?? entries.find((entry) => entry.fileDiff.name === previous.fileDiff.name) ?? null;
+
+  if (dataOptionsKey() !== optionsKey) {
+    optionsKey = dataOptionsKey();
+    viewer.setOptions(viewerOptions());
+  }
+
+  render({ anchor });
+
+  // a push changes what GitHub has
+  if (data.github?.head !== githubHead) loadGithubViewed();
+  else reconcileGithub();
+}
+
+let updating = false;
+let updateQueued = false;
+
+async function loadUpdate() {
+  if (updating) {
+    updateQueued = true;
+    return;
+  }
+
+  updating = true;
+
+  try {
+    const next = await (await fetch('/data')).json();
+
+    if (next.shell !== live.shell) {
+      await reloadPage();
+      return;
+    }
+
+    if (next.revision !== live.revision) applyData(next);
+  } catch {
+    // the server stopped, the events reconnect when it is back
+  } finally {
+    updating = false;
+
+    if (updateQueued) {
+      updateQueued = false;
+      void loadUpdate();
+    }
+  }
+}
+
+function followServer() {
+  const events = new EventSource('/events');
+
+  events.addEventListener('open', () => setLiveStatus(true));
+  events.addEventListener('error', () => setLiveStatus(false));
+  events.addEventListener('message', (event) => {
+    setLiveStatus(true);
+    if (JSON.parse(event.data).revision !== live.revision) void loadUpdate();
+  });
+}
+
 renderSidebar();
 
 const savedName = readStorage(currentKey, null);
@@ -1431,4 +1919,7 @@ setCurrent(entries.find((entry) => entry.fileDiff.name === savedName) ?? null);
 viewer.setup(root);
 render();
 void applyTheme();
+updateGithubStatus();
+loadGithubViewed();
+if (live) followServer();
 `;

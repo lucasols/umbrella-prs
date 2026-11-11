@@ -3,15 +3,25 @@ import {
   type AutoApproveEligibility,
   type AutoApproveInput,
 } from './autoApprove';
-import { getBranchDiff } from './childDiff';
+import {
+  getBranchDiff,
+  getWorktreeChanges,
+  getWorktreeDiff,
+  toPathspec,
+} from './childDiff';
 import {
   resolveConfig,
   type ResolvedConfig,
   type UmbrellaConfig,
 } from './config';
 import { CommandError, defaultExec, type Exec } from './exec';
-import { createGit } from './git';
-import { createGitHub, type FullPrInfo, type PrInfo } from './github';
+import { createGit, splitLines } from './git';
+import {
+  createGitHub,
+  type FullPrInfo,
+  type PrInfo,
+  type PrRefs,
+} from './github';
 import {
   findUmbrellaBranch,
   formatChildBranch,
@@ -95,6 +105,18 @@ export type TreeNode = {
 export type Tree = {
   umbrellas: TreeNode[];
   orphans: { branch: ParsedChild; pr: FullPrInfo | null }[];
+};
+
+/** The diff of a PR as the local repo has it, see `livePrDiff` */
+export type LivePrDiff = {
+  diff: string;
+  files: string[];
+  /** What the diff shows: the working tree, the local branch or the fetched one */
+  source: 'worktree' | 'branch' | 'remote';
+  /** The PR head commit on GitHub, as last pushed or fetched */
+  githubHead: string;
+  /** Files that differ from `githubHead`: changes that were not pushed yet */
+  unpushedFiles: string[];
 };
 
 export type UmbrellaHooks = {
@@ -1089,6 +1111,8 @@ export function createUmbrellaPrs({
       includeContents?: boolean;
       /** Includes the diff the umbrella PR shows after the sync, see `getSyncBaseDiff` */
       includeBaseDiff?: boolean;
+      /** `false` skips fetching in local mode, e.g. when refreshing a viewer */
+      fetch?: boolean;
     },
   ): Promise<OpResult<SyncDiffResult & { base?: SyncBaseDiff }>> {
     return attempt(async () => {
@@ -1106,7 +1130,7 @@ export function createUmbrellaPrs({
 
         const refs = await github.getPrRefs(options.pr);
 
-        await git.tryFetch();
+        if (options.fetch !== false) await git.tryFetch();
 
         head = refs.headRefOid;
 
@@ -1139,7 +1163,7 @@ export function createUmbrellaPrs({
           branchName = current.value;
         }
 
-        await git.tryFetch();
+        if (options.fetch !== false) await git.tryFetch();
 
         if (options.left !== undefined) {
           left = options.left;
@@ -1263,6 +1287,66 @@ export function createUmbrellaPrs({
     });
   }
 
+  /** The PR of the options, or the open PR of a branch, with its commits fetched */
+  async function resolvePr({
+    pr,
+    branch,
+  }: {
+    pr?: number;
+    branch?: string;
+  }): Promise<OpResult<{ pr: number; refs: PrRefs }>> {
+    let prNumber = pr;
+
+    if (prNumber === undefined) {
+      let branchName = branch;
+
+      if (branchName === undefined) {
+        const current = await requireCurrentBranch();
+
+        if (!current.ok) return current;
+
+        branchName = current.value;
+      }
+
+      const branchPr = await github.findOpenPrByHead(branchName);
+
+      if (!branchPr) {
+        return err({
+          code: 'pr-not-found',
+          message: `No open PR found for the branch ${branchName}`,
+          fix: 'Pass the PR number or URL',
+        });
+      }
+
+      prNumber = branchPr.number;
+    }
+
+    const refs = await github.getPrRefs(prNumber);
+
+    await git.tryFetch();
+
+    // the branch of a merged PR may be deleted
+    if (!(await git.commitExists(refs.headRefOid))) {
+      await git.tryFetch(`refs/pull/${prNumber}/head`);
+    }
+
+    // a merged PR is part of its base, so the base from before the merge
+    if (!refs.isOpen && !(await git.commitExists(refs.baseRefOid))) {
+      await git.tryFetch(refs.baseRefOid);
+    }
+
+    return ok({ pr: prNumber, refs });
+  }
+
+  type PrDiffOptions = {
+    pr?: number;
+    /** Branch whose open PR is used, defaults to the current branch */
+    branch?: string;
+    include?: string[];
+    exclude?: string[];
+    ignoreImportOnly?: boolean;
+  };
+
   /**
    * Diff of any PR as GitHub shows it, the PR head against the merge base with
    * its base. Defaults to the open PR of the current branch
@@ -1273,14 +1357,7 @@ export function createUmbrellaPrs({
     include,
     exclude = [],
     ignoreImportOnly = false,
-  }: {
-    pr?: number;
-    /** Branch whose open PR is used, defaults to the current branch */
-    branch?: string;
-    include?: string[];
-    exclude?: string[];
-    ignoreImportOnly?: boolean;
-  } = {}): Promise<
+  }: PrDiffOptions = {}): Promise<
     OpResult<{
       diff: string;
       files: string[];
@@ -1290,55 +1367,16 @@ export function createUmbrellaPrs({
     }>
   > {
     return attempt(async () => {
-      let prNumber = pr;
+      const resolved = await resolvePr({ pr, branch });
 
-      if (prNumber === undefined) {
-        let branchName = branch;
+      if (!resolved.ok) return resolved;
 
-        if (branchName === undefined) {
-          const current = await requireCurrentBranch();
-
-          if (!current.ok) return current;
-
-          branchName = current.value;
-        }
-
-        const branchPr = await github.findOpenPrByHead(branchName);
-
-        if (!branchPr) {
-          return err({
-            code: 'pr-not-found',
-            message: `No open PR found for the branch ${branchName}`,
-            fix: 'Pass the PR number or URL',
-          });
-        }
-
-        prNumber = branchPr.number;
-      }
-
-      const refs = await github.getPrRefs(prNumber);
-
-      await git.tryFetch();
-
-      // the branch of a merged PR may be deleted
-      if (!(await git.commitExists(refs.headRefOid))) {
-        await git.tryFetch(`refs/pull/${prNumber}/head`);
-      }
-
-      let baseRef: string;
-
-      if (refs.isOpen) {
-        baseRef = await remoteOrLocal(refs.baseRefName);
-      } else {
-        // a merged PR is part of its base, so the base from before the merge
-        baseRef = refs.baseRefOid;
-
-        if (!(await git.commitExists(baseRef))) await git.tryFetch(baseRef);
-      }
+      const { refs } = resolved.value;
 
       const diff = await getBranchDiff({
         git,
-        parentRef: baseRef,
+        parentRef:
+          refs.isOpen ? await remoteOrLocal(refs.baseRefName) : refs.baseRefOid,
         branchRef: refs.headRefOid,
         include,
         exclude: [...config.diff.exclude, ...exclude],
@@ -1347,9 +1385,140 @@ export function createUmbrellaPrs({
 
       return ok({
         ...diff,
-        pr: prNumber,
+        pr: resolved.value.pr,
         base: refs.baseRefName,
         head: refs.headRefName,
+      });
+    });
+  }
+
+  /**
+   * The diff of a PR following the local repo, for viewers that update as the
+   * code changes. `refresh` only reads the local repo, so it is fast and works
+   * offline. An open PR shows:
+   *
+   * - `worktree`: its branch is checked out, so the working tree, with the
+   *   uncommitted and untracked files
+   * - `branch`: its local branch, with the commits that were not pushed
+   * - `remote`: the branch as it was last fetched
+   *
+   * Merged and closed PRs always show the diff they had
+   */
+  async function livePrDiff({
+    pr,
+    branch,
+    include,
+    exclude = [],
+    ignoreImportOnly = false,
+  }: PrDiffOptions = {}): Promise<
+    OpResult<{
+      pr: number;
+      base: string;
+      head: string;
+      isOpen: boolean;
+      refresh: () => Promise<OpResult<LivePrDiff>>;
+    }>
+  > {
+    return attempt(async () => {
+      const resolved = await resolvePr({ pr, branch });
+
+      if (!resolved.ok) return resolved;
+
+      const { refs } = resolved.value;
+      const filters = {
+        include,
+        exclude: [...config.diff.exclude, ...exclude],
+      };
+
+      async function getDiff(): Promise<LivePrDiff> {
+        if (!refs.isOpen) {
+          return {
+            ...(await getBranchDiff({
+              git,
+              parentRef: refs.baseRefOid,
+              branchRef: refs.headRefOid,
+              ...filters,
+              ignoreImportOnly,
+            })),
+            source: 'remote',
+            githubHead: refs.headRefOid,
+            unpushedFiles: [],
+          };
+        }
+
+        const parentRef = await remoteOrLocal(refs.baseRefName);
+        // pushes and fetches move the remote branch, the PR head is from when
+        // the viewer started
+        const githubHead = await git.revParse(
+          (await git.remoteBranchExists(refs.headRefName)) ?
+            `${git.remote}/${refs.headRefName}`
+          : refs.headRefOid,
+        );
+
+        if ((await git.currentBranch()) === refs.headRefName) {
+          const unpushed = await getWorktreeChanges({
+            git,
+            from: githubHead,
+            ...filters,
+            namesOnly: true,
+          });
+
+          return {
+            ...(await getWorktreeDiff({
+              git,
+              parentRef,
+              ...filters,
+              ignoreImportOnly,
+            })),
+            source: 'worktree',
+            githubHead,
+            unpushedFiles: unpushed.files,
+          };
+        }
+
+        if (await git.localBranchExists(refs.headRefName)) {
+          return {
+            ...(await getBranchDiff({
+              git,
+              parentRef,
+              branchRef: refs.headRefName,
+              ...filters,
+              ignoreImportOnly,
+            })),
+            source: 'branch',
+            githubHead,
+            unpushedFiles: splitLines(
+              await git.runOk([
+                'diff',
+                '--name-only',
+                githubHead,
+                refs.headRefName,
+                ...toPathspec(filters),
+              ]),
+            ),
+          };
+        }
+
+        return {
+          ...(await getBranchDiff({
+            git,
+            parentRef,
+            branchRef: githubHead,
+            ...filters,
+            ignoreImportOnly,
+          })),
+          source: 'remote',
+          githubHead,
+          unpushedFiles: [],
+        };
+      }
+
+      return ok({
+        pr: resolved.value.pr,
+        base: refs.baseRefName,
+        head: refs.headRefName,
+        isOpen: refs.isOpen,
+        refresh: () => attempt(async () => ok(await getDiff())),
       });
     });
   }
@@ -1409,6 +1578,7 @@ export function createUmbrellaPrs({
     postSyncDiffComment,
     childDiff,
     prDiff,
+    livePrDiff,
     verify,
     autoApprove,
     /** Pure helpers bound to this config */
