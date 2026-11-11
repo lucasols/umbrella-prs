@@ -603,6 +603,13 @@ body.single .shortcut { display: inline-block; }
 .live::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--addition); }
 .live.offline::before { background: var(--deletion); }
 .github .failed { color: var(--deletion); }
+.mention {
+  padding: 0 6px;
+  border-color: transparent;
+  color: var(--muted);
+  font: 500 12px/1.6 var(--diffs-font-family);
+}
+.mention:hover { color: var(--text); }
 .toast {
   position: fixed;
   left: 16px;
@@ -1371,6 +1378,15 @@ function viewerOptions() {
           return entry ? el('span', { className: 'muted', textContent: entry.section.rightLabel }) : null;
         }
       : undefined,
+    renderHeaderFilenameSuffix: (fileDiff) => {
+      const text = '@' + fileDiff.name;
+      const button = el('button', { type: 'button', className: 'mention', textContent: '@', title: 'Copy ' + text });
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        void copyAndShow({ text, old: false });
+      });
+      return button;
+    },
     renderHeaderMetadata: (fileDiff, context) => {
       const entry = entriesById.get(context?.item?.id) ?? entriesByDiff.get(fileDiff);
       if (!entry) return null;
@@ -1662,20 +1678,89 @@ function showToast(text) {
 
 const mentionShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘⇧M' : 'Ctrl+Shift+M';
 
-// the selected lines as a mention for an agent: @path#L10-12
+// lines of a file as a mention for an agent: @path#L10-12. old: the lines are
+// of the old version, when only removed lines are selected
+function lineMention(entry, lines, old) {
+  const first = Math.min(...lines);
+  const last = Math.max(...lines);
+
+  return { text: '@' + entry.fileDiff.name + '#L' + first + (last === first ? '' : '-' + last), old };
+}
+
+// the lines selected by their numbers
 function selectionMention(selection) {
   const entry = entriesById.get(selection.id);
   if (!entry) return null;
 
   const { start, end, side, endSide } = selection.range;
-  const first = Math.min(start, end);
-  const last = Math.max(start, end);
 
-  return {
-    text: '@' + entry.fileDiff.name + '#L' + first + (last === first ? '' : '-' + last),
-    // lines of the old version, when only removed lines are selected
-    old: side === 'deletions' && (endSide ?? side) === 'deletions',
-  };
+  return lineMention(entry, [start, end], side === 'deletions' && (endSide ?? side) === 'deletions');
+}
+
+// the selected text, each diff is in its own shadow root
+function selectedTextRange(shadowRoots) {
+  const selection = getSelection();
+  if (!selection) return null;
+
+  if (selection.getComposedRanges) {
+    try {
+      return selection.getComposedRanges({ shadowRoots })[0] ?? null;
+    } catch {
+      // older browsers take the shadow roots as arguments
+      return selection.getComposedRanges(...shadowRoots)[0] ?? null;
+    }
+  }
+
+  for (const shadow of shadowRoots) {
+    const inner = shadow.getSelection?.();
+    if (inner && inner.rangeCount > 0 && !inner.isCollapsed) return inner.getRangeAt(0);
+  }
+
+  return null;
+}
+
+// the lines of the selected text, in the file where the selection starts
+function textSelectionMention() {
+  const rendered = viewer.getRenderedItems();
+  const shadowRoots = rendered.flatMap((item) => item.element.shadowRoot ?? []);
+  const selected = selectedTextRange(shadowRoots);
+  if (!selected || selected.collapsed) return null;
+
+  const startRoot = selected.startContainer.getRootNode();
+  const endRoot = selected.endContainer.getRootNode();
+  const shadow = shadowRoots.includes(startRoot) ? startRoot : shadowRoots.includes(endRoot) ? endRoot : null;
+  const entry = shadow ? entriesById.get(rendered.find((item) => item.element === shadow.host)?.id) : null;
+  if (!entry) return null;
+
+  const range = document.createRange();
+  if (startRoot === shadow) range.setStart(selected.startContainer, selected.startOffset);
+  else range.setStart(shadow, 0);
+  if (endRoot === shadow) range.setEnd(selected.endContainer, selected.endOffset);
+  else range.setEnd(shadow, shadow.childNodes.length);
+
+  const lineRange = document.createRange();
+  const newLines = [];
+  const oldLines = [];
+
+  for (const line of shadow.querySelectorAll('[data-line]')) {
+    lineRange.selectNodeContents(line);
+    // lines with selected text, not the ones the selection only touches
+    if (range.compareBoundaryPoints(Range.END_TO_START, lineRange) >= 0) continue;
+    if (range.compareBoundaryPoints(Range.START_TO_END, lineRange) <= 0) continue;
+
+    if (line.dataset.lineType === 'change-deletion') {
+      oldLines.push(Number(line.dataset.line));
+    } else if (line.closest('[data-code]')?.hasAttribute('data-deletions')) {
+      // the left side of the split layout has the old numbers
+      if (line.dataset.altLine !== undefined) newLines.push(Number(line.dataset.altLine));
+    } else {
+      newLines.push(Number(line.dataset.line));
+    }
+  }
+
+  if (newLines.length > 0) return lineMention(entry, newLines, false);
+
+  return oldLines.length > 0 ? lineMention(entry, oldLines, true) : null;
 }
 
 async function copyText(text) {
@@ -1693,20 +1778,25 @@ async function copyText(text) {
   }
 }
 
-// copies the mention of the selected lines, or of the current file without them
+async function copyAndShow(mention) {
+  await copyText(mention.text);
+  showToast('Copied: ' + mention.text + (mention.old ? ' (lines of the old version)' : ''));
+}
+
+// copies the mention of the lines of the selected text, or of the lines
+// selected by their numbers, or of the current file without a selection
 async function copyMention() {
   const selection = viewer.getSelectedLines();
-  const mention = selection ? selectionMention(selection)
-    : current ? { text: '@' + current.fileDiff.name, old: false }
-    : null;
+  const mention = textSelectionMention()
+    ?? (selection ? selectionMention(selection) : null)
+    ?? (current ? { text: '@' + current.fileDiff.name, old: false } : null);
 
   if (!mention) {
-    showToast('Select lines by clicking their numbers to copy a mention');
+    showToast('Select lines to copy a mention of them');
     return;
   }
 
-  await copyText(mention.text);
-  showToast('Copied: ' + mention.text + (mention.old ? ' (lines of the old version)' : ''));
+  await copyAndShow(mention);
 }
 
 document.addEventListener('keydown', (event) => {

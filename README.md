@@ -118,7 +118,7 @@ The comment always starts with the command that opens the diff in the browser, e
 - A toggle that hides import-only changes. Conflict markers and multi-line import list items around imports count as import changes.
 - A second view, `<umbrella> vs <base>`, with the files changed by the sync as the umbrella PR shows them once the sync PR is merged: the merged base commit compared with the PR head.
 - Expandable unchanged lines, split and unified layouts, and line wrapping.
-- Line selection, by clicking and dragging the line numbers. `Cmd+Shift+M` (`Ctrl+Shift+M`) copies a mention of the selected lines to paste in an agent, e.g. `@src/app.ts#L10-12`, or of the current file when no lines are selected.
+- Mentions to paste in an agent: `Cmd+Shift+M` (`Ctrl+Shift+M`) copies a mention of the selected lines, e.g. `@src/app.ts#L10-12`, either the lines of the selected text or the ones selected by clicking and dragging the line numbers, or of the current file when nothing is selected. The `@` button next to a file name copies the mention of the file.
 - A theme switcher (GitHub Dark by default, GitHub Light and the Pierre themes from [diffshub.com](https://diffshub.com), fixed or following the system). The page colors are derived from the theme.
 
 `diff sync` takes a branch, a commit or a PR (`123`, `#123` or its URL). For a merged PR, the base from before the merge is used.
