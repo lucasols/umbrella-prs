@@ -9,7 +9,12 @@ export const PACKAGE_JSON_KEY = 'umbrellaPrs';
 
 const configExample = `{ "types": { "feature": "main" } }`;
 
-export type LoadConfigError = { message: string; fix: string };
+export type LoadConfigError = {
+  message: string;
+  fix: string;
+  /** No config was found, instead of an invalid one */
+  missing?: boolean;
+};
 
 /**
  * Loads `--config`, or the closest `umbrella-prs.config.json` or package.json
@@ -68,6 +73,7 @@ function missingConfig() {
   return err<LoadConfigError>({
     message: `No ${CONFIG_FILE_NAME} found`,
     fix: `Create ${CONFIG_FILE_NAME} at the repo root, e.g. ${configExample}, or pass \`--config <path>\``,
+    missing: true,
   });
 }
 

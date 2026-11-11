@@ -134,7 +134,11 @@ const globalOptions: Record<string, OptionDef> = {
 type CommandContext = {
   positionals: string[];
   values: Record<string, string | boolean | (string | boolean)[] | undefined>;
-  umbrella: () => UmbrellaPrs;
+  /**
+   * `configOptional`: for commands that work in any repo, the defaults are
+   * used when the repo has no config
+   */
+  umbrella: (options?: { configOptional?: boolean }) => UmbrellaPrs;
   interactive: boolean;
   yes: boolean;
   /** `--json` was passed */
@@ -862,9 +866,12 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
   const prMatch = target === undefined ? null : prTargetRegex.exec(target);
   const pr = prMatch?.[1] ?? prMatch?.[2];
 
+  // a PR has its branches, so it doesn't need the config to find them
+  const u = ctx.umbrella({ configOptional: pr !== undefined });
+
   async function getSyncDiff({ fetch }: { fetch: boolean }) {
     return unwrap(
-      await ctx.umbrella().syncDiff({
+      await u.syncDiff({
         mode: 'local',
         ...(pr !== undefined ? { pr: Number(pr) } : { branch: target }),
         left: getString(ctx, 'left'),
@@ -889,8 +896,7 @@ async function diffSyncCmd(ctx: CommandContext): Promise<CommandOutput> {
         return buildSyncDiffPage(refreshed, { base: refreshed.base });
       },
       // the sync diff is between commits, so only when branches move
-      watch: (onChange) =>
-        watchRepo({ git: ctx.umbrella().git, worktree: false, onChange }),
+      watch: (onChange) => watchRepo({ git: u.git, worktree: false, onChange }),
     });
   }
 
@@ -945,7 +951,7 @@ async function servePrDiff(
   ctx: CommandContext,
   options: Parameters<UmbrellaPrs['livePrDiff']>[0],
 ): Promise<CommandOutput> {
-  const u = ctx.umbrella();
+  const u = ctx.umbrella({ configOptional: true });
   const live = unwrap(await u.livePrDiff(options));
 
   async function getPage() {
@@ -1011,7 +1017,9 @@ async function diffPrCmd(ctx: CommandContext): Promise<CommandOutput> {
 
   if (servesViewer(ctx)) return servePrDiff(ctx, options);
 
-  const result = unwrap(await ctx.umbrella().prDiff(options));
+  const result = unwrap(
+    await ctx.umbrella({ configOptional: true }).prDiff(options),
+  );
   const data = {
     pr: result.pr,
     base: result.base,
@@ -1990,10 +1998,18 @@ export async function runCli(io: CliIo): Promise<number> {
         process.once('SIGTERM', () => resolve());
       }),
     readStdin: io.readStdin ?? readProcessStdin,
-    umbrella: () => {
+    umbrella: ({ configOptional = false } = {}) => {
       if (umbrellaInstance) return umbrellaInstance;
 
-      const config = loadConfig({ cwd, configPath });
+      const loaded = loadConfig({ cwd, configPath });
+      const config =
+        !loaded.ok && loaded.error.missing && configOptional ?
+          // the types are not used by the commands that work without a config
+          {
+            ok: true as const,
+            value: { config: { types: { feature: 'main' } } },
+          }
+        : loaded;
 
       if (!config.ok) {
         throw new CliError({

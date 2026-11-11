@@ -305,6 +305,7 @@ export function renderViewerPage(
     '<div id="resizer" class="resizer" title="Drag to resize, double-click to reset"></div>',
     '<main id="review"></main>',
     '</div>',
+    '<div id="toast" class="toast hidden" role="status"></div>',
     `<script type="application/json" id="sync-diff-data">${serializeJson(data)}</script>`,
     ...(live ?
       [
@@ -602,6 +603,19 @@ body.single .shortcut { display: inline-block; }
 .live::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--addition); }
 .live.offline::before { background: var(--deletion); }
 .github .failed { color: var(--deletion); }
+.toast {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 10;
+  max-width: calc(100vw - 32px);
+  padding: 6px 12px;
+  border: 1px solid var(--border-opaque);
+  border-radius: 6px;
+  background: var(--surface-hover);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.3);
+  overflow-wrap: anywhere;
+}
 @media (max-width: 720px) {
   .layout { flex-direction: column; }
   #files { width: auto; max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--border-opaque); }
@@ -1342,6 +1356,12 @@ function viewerOptions() {
     overflow: wrap ? 'wrap' : 'scroll',
     diffStyle,
     stickyHeaders: true,
+    // lines are selected by clicking and dragging their numbers
+    enableLineSelection: true,
+    onSelectedLinesChange: (selection) => {
+      const mention = selection ? selectionMention(selection) : null;
+      if (mention) showToast('Press ' + mentionShortcut + ' to copy ' + mention.text);
+    },
     // without contents, e.g. the base diff, unchanged lines can't be expanded
     loadDiffFiles: sections.some((section) => section.contents) ? loadDiffFiles : undefined,
     renderCodeViewHeader: () => summary,
@@ -1628,6 +1648,72 @@ resizer.addEventListener('pointerdown', (event) => {
 resizer.addEventListener('dblclick', () => {
   setSidebarWidth(null);
   writeStorage(sidebarWidthKey, null);
+});
+
+const toast = document.getElementById('toast');
+let toastTimer = 0;
+
+function showToast(text) {
+  toast.textContent = text;
+  toast.classList.remove('hidden');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.add('hidden'), 4000);
+}
+
+const mentionShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘⇧M' : 'Ctrl+Shift+M';
+
+// the selected lines as a mention for an agent: @path#L10-12
+function selectionMention(selection) {
+  const entry = entriesById.get(selection.id);
+  if (!entry) return null;
+
+  const { start, end, side, endSide } = selection.range;
+  const first = Math.min(start, end);
+  const last = Math.max(start, end);
+
+  return {
+    text: '@' + entry.fileDiff.name + '#L' + first + (last === first ? '' : '-' + last),
+    // lines of the old version, when only removed lines are selected
+    old: side === 'deletions' && (endSide ?? side) === 'deletions',
+  };
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // the clipboard API is not available, e.g. the page is not focused
+    const field = el('textarea', { value: text });
+    field.style.position = 'fixed';
+    field.style.opacity = '0';
+    document.body.append(field);
+    field.select();
+    document.execCommand('copy');
+    field.remove();
+  }
+}
+
+// copies the mention of the selected lines, or of the current file without them
+async function copyMention() {
+  const selection = viewer.getSelectedLines();
+  const mention = selection ? selectionMention(selection)
+    : current ? { text: '@' + current.fileDiff.name, old: false }
+    : null;
+
+  if (!mention) {
+    showToast('Select lines by clicking their numbers to copy a mention');
+    return;
+  }
+
+  await copyText(mention.text);
+  showToast('Copied: ' + mention.text + (mention.old ? ' (lines of the old version)' : ''));
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyM' || !event.shiftKey || event.altKey || !(event.metaKey || event.ctrlKey)) return;
+
+  event.preventDefault();
+  void copyMention();
 });
 
 document.addEventListener('keydown', (event) => {

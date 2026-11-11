@@ -711,6 +711,36 @@ describe('cli', () => {
     expect(result.stderr).toContain('No umbrella-prs.config.json found');
   });
 
+  test('diff pr works in repos without a config', async () => {
+    repo.git('checkout', '--quiet', 'master');
+    repo.git('rm', '--quiet', 'umbrella-prs.config.json');
+    repo.git('commit', '--quiet', '-m', 'remove config');
+    repo.git('push', '--quiet');
+    repo.git('checkout', '--quiet', '-b', 'fix-typo');
+    repo.commit('fix typo', { 'app.ts': lines(10, { 2: 'fixed' }) });
+    repo.git('push', '--quiet', '-u', 'origin', 'fix-typo');
+    const pr = repo.addPr({ headRefName: 'fix-typo', baseRefName: 'master' });
+
+    const printed = await cli(['diff', 'pr', pr.url, '--print']);
+
+    expect(printed.exitCode).toBe(EXIT.ok);
+    expect(printed.stdout).toContain('+fixed');
+
+    const viewer = await serve(['diff', 'pr']);
+
+    expect(await viewer.data()).toMatchObject({
+      data: { github: { pr: pr.number } },
+    });
+
+    // an invalid config is still an error
+    repo.write('umbrella-prs.config.json', '{ "types": {} }');
+
+    const invalid = await cli(['diff', 'pr', '--print']);
+
+    expect(invalid.exitCode).toBe(EXIT.config);
+    expect(invalid.stderr).toContain('Invalid config');
+  });
+
   test('parse reports branches outside the workflow without failing', async () => {
     const outside = await cli(['parse', 'feature/x', '--json']);
 
